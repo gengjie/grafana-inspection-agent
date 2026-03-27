@@ -9,6 +9,7 @@ COPY pyproject.toml ./
 RUN uv sync --no-dev --no-install-project
 
 # Copy source and install project
+COPY README.md src/ ./
 COPY src/ src/
 RUN uv sync --no-dev
 
