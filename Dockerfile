@@ -5,13 +5,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 WORKDIR /app
 
 # Install dependencies first (cached layer)
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 RUN uv sync --no-dev --no-install-project
 
 # Copy source and install project
-COPY README.md src/ ./
 COPY src/ src/
-RUN uv sync --no-dev
+RUN uv sync --no-dev --no-editable
 
 FROM python:3.12-slim
 
