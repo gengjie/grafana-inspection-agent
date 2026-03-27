@@ -17,10 +17,12 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
+COPY src/ src/
 
 # Copy example config
 COPY config/config.example.yaml /app/config/config.example.yaml
 
 ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app/src"
 
 ENTRYPOINT ["grafana-agent-langgraph"]
