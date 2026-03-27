@@ -44,7 +44,7 @@ include:
       job_name: scan:gitlab
       needs: [docker-build:np]
       rules:
-        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule && $DAILY_RUN == "false"
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $DAILY_RUN == "false"
           when: on_success
 
 daily-run:
