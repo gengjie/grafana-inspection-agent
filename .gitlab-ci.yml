@@ -51,16 +51,7 @@ daily-run:
   stage: daily-run
   image: ${CI_REGISTRY_IMAGE}/${TOPIC}-${APPLICATION_NAME}:v1.3
   variables:
-    # DAILY_RUN: "true"
     APP_CONFIG_PATH: "/app/config/config.example.yaml"
-    GRAFANA_URL: "${GRAFANA_URL}"
-    GRAFANA_API_KEY: "${GRAFANA_API_KEY}"
-    COPILOT_ACCESS_TOKEN: "${COPILOT_ACCESS_TOKEN}"
-    SMTP_HOST: "${SMTP_HOST}"
-    SMTP_PORT: "${SMTP_PORT}"
-    SMTP_USER: "${SMTP_USER}"
-    SMTP_PASSWORD: "${SMTP_PASSWORD}"
-    EMAIL_FROM: "${EMAIL_FROM}"
   script:
     - echo "SMTP_HOST: $SMTP_HOST"
     - echo "SMTP_PORT: $SMTP_PORT"
