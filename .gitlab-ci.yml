@@ -49,7 +49,7 @@ include:
 
 daily-run:
   stage: daily-run
-  image: ${CI_REGISTRY_IMAGE}/${TOPIC}-${APPLICATION_NAME}:v1.2
+  image: ${CI_REGISTRY_IMAGE}/${TOPIC}-${APPLICATION_NAME}:v1.3
   variables:
     # DAILY_RUN: "true"
     APP_CONFIG_PATH: "/app/config/config.example.yaml"
