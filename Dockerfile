@@ -19,8 +19,8 @@ WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
 
-# Ensure config directory exists for mounting
-RUN mkdir -p /app/config
+# Copy example config
+COPY config/config.example.yaml /app/config/config.example.yaml
 
 ENV PATH="/app/.venv/bin:$PATH"
 

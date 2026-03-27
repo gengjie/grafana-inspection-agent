@@ -44,7 +44,19 @@ include:
       rules:
         - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule"
 
+daily-run:
+  stage: daily-run
+  image: ${CI_REGISTRY_IMAGE}/${TOPIC}-${APPLICATION_NAME}:v1.0
+  variables:
+    # DAILY_RUN: "true"
+    
+  script:
+    - grafana-agent-langgraph
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $DAILY_RUN == "true"
+
 stages:
   - dockerize
   - release
   - sysdigScan
+  - daily-run
