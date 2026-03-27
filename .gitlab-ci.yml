@@ -5,8 +5,8 @@ variables:
   TOPIC: "gxd"
   APPLICATION_NAME: "grafana-agent-llm-inspector"
 
-.run-if-on-master-branch: &run-if-on-master-branch
-  if: '$CI_COMMIT_BRANCH == "master"'
+.run-if-on-main-branch: &run-if-on-main-branch
+  if: '$CI_COMMIT_BRANCH == "main"'
   when: on_success
 
 include:
@@ -23,7 +23,7 @@ include:
       registry_type: gitlab
       repository_name: $TOPIC-$APPLICATION_NAME
       rules:
-        - <<: *run-if-on-master-branch
+        - <<: *run-if-on-main-branch
 
   - component: $CI_SERVER_FQDN/tap/cicd-components/docker/release@main
     inputs:
