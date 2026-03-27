@@ -1,0 +1,163 @@
+# Grafana Inspection Agent (LangGraph)
+
+基于 **LangGraph StateGraph** 编排的 Grafana 自动化巡检系统。自动采集 Grafana Dashboard 面板指标与告警数据，通过 GitHub Copilot LLM 进行智能分析，生成巡检日报与 JVM 健康分析报告，并支持 Email / Teams 多渠道推送。
+
+## 核心特性
+
+- **Dashboard 自动巡检** — 并行采集所有面板指标数据，LLM 生成摘要
+- **告警监控** — 告警规则、活跃告警、历史告警全量分析
+- **DB/Kafka 面板健康分析** — 自动筛选数据库/Kafka 相关面板，分块并行分析
+- **JVM 健康分析报告** — 筛选 JVM 相关面板（Heap、GC、Thread、Metaspace 等），生成专项报告
+- **多渠道通知** — Email（aiosmtplib）+ Microsoft Teams（Webhook）
+- **多语言** — 中文 / 英文报告
+- **长期记忆** — 基于 mem0 本地存储，支持跨天趋势对比
+- **GitHub Copilot LLM** — 使用 access token 交换 session token，通过私有协议调用，默认模型 `claude-sonnet-4.6`
+
+## 工作流拓扑
+
+```
+START
+  │
+  ▼
+[inspect] ─── Grafana 数据采集（Dashboard + Alert）
+  │
+  ├──────────────┐
+  ▼              ▼
+[summarize]  [jvm_report]    ← 并行执行
+  │              │
+  └──────┬───────┘
+         ▼
+   [build_report] ─── 格式化纯文本 / HTML 邮件 / JVM 邮件
+         │
+         ▼
+     [notify] ─── Email + Teams 推送
+         │
+         ▼
+        END
+```
+
+## 项目结构
+
+```
+src/grafana_agent_langgraph/
+├── main.py              # CLI 入口，预检查 + 启动工作流
+├── workflow.py           # LangGraph StateGraph 定义（5 节点）
+├── grafana_client.py     # Grafana API 异步客户端（Dashboard / Alert / Metrics）
+├── llm_client.py         # GitHub Copilot LLM 客户端（Token 交换 + 分析）
+├── report_generator.py   # 报告格式化（纯文本 / HTML 邮件 / Teams 卡片）
+├── notifier.py           # 多渠道通知发送（Email + Teams）
+├── config.py             # Pydantic 配置模型（YAML + 环境变量覆盖）
+├── runtime.py            # 配置加载与启动验证
+└── logger.py             # 统一日志设置
+```
+
+## 快速开始
+
+```bash
+# 1. 安装依赖
+uv sync
+
+# 2. 创建配置文件
+cp config/config.example.yaml config/config.yaml
+# 编辑 config/config.yaml，填入 Grafana URL、API Key 等
+
+# 3. 设置敏感信息（推荐通过 .env 或环境变量）
+export COPILOT_ACCESS_TOKEN="ghu_xxx"
+export SMTP_USER="your-smtp-user"
+export SMTP_PASSWORD="your-smtp-password"
+
+# 4. 运行
+uv run python -m grafana_agent_langgraph.main
+# 或使用 CLI 入口
+uv run grafana-agent-langgraph
+```
+
+也可以使用 `.env` 文件：`uv run --env-file .env grafana-agent-langgraph`。
+
+## 配置
+
+支持 **YAML 配置文件 + 环境变量覆盖** 双层机制。环境变量优先级高于 YAML。
+
+### 配置文件路径
+
+按以下顺序查找配置文件（优先级从高到低）：
+
+1. 环境变量 `GRAFANA_AGENT_CONFIG` / `APP_CONFIG_PATH` / `CONFIG_PATH` 指定的路径
+2. `config/config.yaml`
+3. `config/config.example.yaml`
+
+### 环境变量
+
+#### 必需
+
+| 变量 | 说明 |
+|------|------|
+| `GRAFANA_URL` | Grafana 实例 URL |
+| `GRAFANA_API_KEY` | Grafana API Key（Service Account Token） |
+| `COPILOT_ACCESS_TOKEN` | GitHub Access Token（用于交换 Copilot Session Token） |
+
+#### LLM 配置
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `LLM_PROVIDER` | `github_copilot` | LLM 提供者（仅支持 github_copilot） |
+| `LLM_MODEL` | `claude-sonnet-4.6` | 模型名称 |
+| `COPILOT_API_BASE` | `https://api.githubcopilot.com` | Copilot API 地址 |
+| `COPILOT_TOKEN_URL` | `https://api.github.com/copilot_internal/v2/token` | Session Token 交换端点 |
+| `COPILOT_EDITOR_VERSION` | `vscode/1.99.0` | Editor-Version 请求头 |
+| `COPILOT_EDITOR_PLUGIN_VERSION` | `copilot-chat/0.26.7` | Editor-Plugin-Version 请求头 |
+| `COPILOT_USER_AGENT` | `GitHubCopilotChat/0.26.7` | User-Agent 请求头 |
+| `LLM_TEMPERATURE` | `0.1` | 生成温度 |
+| `LLM_MAX_TOKENS` | `1000000` | 最大 Token 数 |
+
+#### 通知配置（敏感信息推荐环境变量注入）
+
+| 变量 | 说明 |
+|------|------|
+| `SMTP_HOST` | SMTP 服务器地址 |
+| `SMTP_PORT` | SMTP 端口（默认 587） |
+| `SMTP_USER` | SMTP 用户名 |
+| `SMTP_PASSWORD` | SMTP 密码 |
+| `EMAIL_FROM` | 发件人地址 |
+| `EMAIL_TO` | 收件人地址（逗号分隔） |
+| `EMAIL_ENABLED` | 是否启用邮件通知 |
+| `TEAMS_ENABLED` | 是否启用 Teams 通知 |
+| `TEAMS_WEBHOOK_URL` | Teams Webhook URL |
+
+#### 其他
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `GRAFANA_TIMEOUT` | `30` | Grafana 请求超时（秒） |
+| `LOG_LEVEL` | `INFO` | 日志级别 |
+| `TIMEZONE` | `UTC` | 时区 |
+| `LOOKBACK_HOURS` | `24` | 巡检回溯时间（小时） |
+| `LANGUAGE` | `zh` | 报告语言（`zh` / `en`） |
+
+## 依赖
+
+| 包 | 用途 |
+|----|------|
+| `aiohttp` | 异步 HTTP 客户端（Copilot API + Grafana API） |
+| `aiosmtplib` | 异步 SMTP 邮件发送 |
+| `langgraph` | StateGraph 工作流编排 |
+| `langchain-core` | LangChain 基础框架 |
+| `pydantic` / `pydantic-settings` | 配置数据验证 |
+| `pyyaml` | YAML 配置解析 |
+| `markdown` | Markdown → HTML 转换（邮件报告） |
+| `python-dateutil` | 日期时间处理 |
+| `email-validator` | 邮件地址验证 |
+
+## 开发
+
+```bash
+# 安装开发依赖
+uv sync --group dev
+
+# Lint & Format
+uv run ruff check src/
+uv run ruff format src/
+
+# 测试
+uv run pytest
+```

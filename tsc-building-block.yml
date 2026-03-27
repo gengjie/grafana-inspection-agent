@@ -1,0 +1,6 @@
+app:
+  id: 418
+buildingBlock:
+  name: Grafana Agent LLM Inspector
+  description: This project is a GitLab Pipeline agent for inspecting Grafana dashboards using LLMs and ReAct architecture.
+  type: tool

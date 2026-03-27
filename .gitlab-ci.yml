@@ -1,0 +1,50 @@
+default:
+  tags: [pr, amd64]
+
+variables:
+  TOPIC: "gxd"
+  APPLICATION_NAME: "grafana-agent-llm-inspector"
+
+.run-if-on-master-branch: &run-if-on-master-branch
+  if: '$CI_COMMIT_BRANCH == "master"'
+  when: on_success
+
+include:
+  - project: tsc/tsc-pipeline
+    file: /includes/docker-ecr.yaml
+    ref: master
+
+  - component: $CI_SERVER_FQDN/tap/cicd-components/docker/build@main
+    inputs:
+      stage: dockerize
+      job_name: 'docker-build:np'
+      topic: $TOPIC
+      env: int
+      registry_type: gitlab
+      repository_name: $TOPIC-$APPLICATION_NAME
+      rules:
+        - <<: *run-if-on-master-branch
+
+  - component: $CI_SERVER_FQDN/tap/cicd-components/docker/release@main
+    inputs:
+      stage: release
+      job_name: 'docker-release:np'
+      topic: $TOPIC
+      env: int
+      registry_type: gitlab
+      repository_name: $TOPIC-$APPLICATION_NAME
+      rules:
+        - if: $CI_COMMIT_TAG
+
+  - component: $CI_SERVER_FQDN/tap/cicd-components/security/scan@main
+    inputs:
+      stage: sysdigScan
+      job_name: scan:gitlab
+      needs: [docker-build:np]
+      rules:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule"
+
+stages:
+  - dockerize
+  - release
+  - sysdigScan

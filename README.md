@@ -1,93 +1,164 @@
-# Grafana-Inspection-
+# Grafana Inspection Agent (LangGraph)
 
+An automated Grafana inspection system orchestrated by **LangGraph StateGraph**. It collects dashboard panel metrics and alert data from Grafana, performs intelligent analysis via GitHub Copilot LLM, generates daily inspection reports and JVM health analysis reports, and delivers them through Email / Teams.
 
+## Features
 
-## Getting started
+- **Dashboard Auto-Inspection** — Parallel metric collection across all panels with LLM-generated summaries
+- **Alert Monitoring** — Full analysis of alert rules, active alerts, and alert history
+- **DB/Kafka Panel Health Analysis** — Auto-filters database/Kafka panels, chunked parallel analysis
+- **JVM Health Report** — Filters JVM-related panels (Heap, GC, Thread, Metaspace, etc.) for a dedicated report
+- **Multi-Channel Notification** — Email (aiosmtplib) + Microsoft Teams (Webhook)
+- **Multi-Language** — Chinese / English reports
+- **Long-Term Memory** — Local storage via mem0 for cross-day trend comparison
+- **GitHub Copilot LLM** — Access token → session token exchange via private protocol, default model `claude-sonnet-4.6`
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## Workflow Topology
 
 ```
-cd existing_repo
-git remote add origin https://git.signintra.com/cross-docking/deploy/grafana-inspection.git
-git branch -M main
-git push -uf origin main
+START
+  │
+  ▼
+[inspect] ─── Grafana data collection (Dashboard + Alert)
+  │
+  ├──────────────┐
+  ▼              ▼
+[summarize]  [jvm_report]    ← parallel execution
+  │              │
+  └──────┬───────┘
+         ▼
+   [build_report] ─── Format plain text / HTML email / JVM email
+         │
+         ▼
+     [notify] ─── Email + Teams delivery
+         │
+         ▼
+        END
 ```
 
-## Integrate with your tools
+## Project Structure
 
-* [Set up project integrations](https://git.signintra.com/cross-docking/deploy/grafana-inspection/-/settings/integrations)
+```
+src/grafana_agent_langgraph/
+├── main.py              # CLI entry point, preflight checks + workflow launch
+├── workflow.py           # LangGraph StateGraph definition (5 nodes)
+├── grafana_client.py     # Grafana API async client (Dashboard / Alert / Metrics)
+├── llm_client.py         # GitHub Copilot LLM client (token exchange + analysis)
+├── report_generator.py   # Report formatting (plain text / HTML email / Teams card)
+├── notifier.py           # Multi-channel notification (Email + Teams)
+├── config.py             # Pydantic config models (YAML + env var override)
+├── runtime.py            # Config loading and startup validation
+└── logger.py             # Unified logging setup
+```
 
-## Collaborate with your team
+## Quick Start
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+```bash
+# 1. Install dependencies
+uv sync
 
-## Test and Deploy
+# 2. Create config file
+cp config/config.example.yaml config/config.yaml
+# Edit config/config.yaml with your Grafana URL, API Key, etc.
 
-Use the built-in continuous integration in GitLab.
+# 3. Set sensitive info (recommended via .env or environment variables)
+export COPILOT_ACCESS_TOKEN="ghu_xxx"
+export SMTP_USER="your-smtp-user"
+export SMTP_PASSWORD="your-smtp-password"
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+# 4. Run
+uv run python -m grafana_agent_langgraph.main
+# Or use the CLI entry point
+uv run grafana-agent-langgraph
+```
 
-***
+You can also use a `.env` file with `uv run --env-file .env grafana-agent-langgraph`.
 
-# Editing this README
+## Configuration
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Supports a **YAML config file + environment variable override** dual-layer mechanism. Environment variables take precedence over YAML.
 
-## Suggestions for a good README
+### Config File Path
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+Config files are resolved in the following order (highest to lowest priority):
 
-## Name
-Choose a self-explaining name for your project.
+1. Path specified by `GRAFANA_AGENT_CONFIG` / `APP_CONFIG_PATH` / `CONFIG_PATH` env vars
+2. `config/config.yaml`
+3. `config/config.example.yaml`
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+### Environment Variables
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+#### Required
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+| Variable | Description |
+|----------|-------------|
+| `GRAFANA_URL` | Grafana instance URL |
+| `GRAFANA_API_KEY` | Grafana API Key (Service Account Token) |
+| `COPILOT_ACCESS_TOKEN` | GitHub Access Token (exchanged for Copilot Session Token) |
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+#### LLM Configuration
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `github_copilot` | LLM provider (only github_copilot supported) |
+| `LLM_MODEL` | `claude-sonnet-4.6` | Model name |
+| `COPILOT_API_BASE` | `https://api.githubcopilot.com` | Copilot API base URL |
+| `COPILOT_TOKEN_URL` | `https://api.github.com/copilot_internal/v2/token` | Session token exchange endpoint |
+| `COPILOT_EDITOR_VERSION` | `vscode/1.99.0` | Editor-Version header |
+| `COPILOT_EDITOR_PLUGIN_VERSION` | `copilot-chat/0.26.7` | Editor-Plugin-Version header |
+| `COPILOT_USER_AGENT` | `GitHubCopilotChat/0.26.7` | User-Agent header |
+| `LLM_TEMPERATURE` | `0.1` | Generation temperature |
+| `LLM_MAX_TOKENS` | `1000000` | Maximum token count |
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+#### Notification (sensitive fields recommended via env vars)
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+| Variable | Description |
+|----------|-------------|
+| `SMTP_HOST` | SMTP server host |
+| `SMTP_PORT` | SMTP port (default 587) |
+| `SMTP_USER` | SMTP username |
+| `SMTP_PASSWORD` | SMTP password |
+| `EMAIL_FROM` | Sender email address |
+| `EMAIL_TO` | Recipient addresses (comma-separated) |
+| `EMAIL_ENABLED` | Enable email notifications |
+| `TEAMS_ENABLED` | Enable Teams notifications |
+| `TEAMS_WEBHOOK_URL` | Teams Webhook URL |
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+#### Other
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GRAFANA_TIMEOUT` | `30` | Grafana request timeout (seconds) |
+| `LOG_LEVEL` | `INFO` | Log level |
+| `TIMEZONE` | `UTC` | Timezone |
+| `LOOKBACK_HOURS` | `24` | Inspection lookback period (hours) |
+| `LANGUAGE` | `zh` | Report language (`zh` / `en`) |
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## Dependencies
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+| Package | Purpose |
+|---------|---------|
+| `aiohttp` | Async HTTP client (Copilot API + Grafana API) |
+| `aiosmtplib` | Async SMTP email delivery |
+| `langgraph` | StateGraph workflow orchestration |
+| `langchain-core` | LangChain base framework |
+| `pydantic` / `pydantic-settings` | Config data validation |
+| `pyyaml` | YAML config parsing |
+| `markdown` | Markdown → HTML conversion (email reports) |
+| `python-dateutil` | Date/time handling |
+| `email-validator` | Email address validation |
 
-## License
-For open source projects, say how it is licensed.
+## Development
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+```bash
+# Install dev dependencies
+uv sync --group dev
+
+# Lint & Format
+uv run ruff check src/
+uv run ruff format src/
+
+# Test
+uv run pytest
+```
+
