@@ -33,9 +33,11 @@ class LLMClient:
         start_ts = lookback.get("start", "")
         end_ts = lookback.get("end", "")
 
+        # add additional keywords related to DB/Kafka panels based on common naming conventions and data source types
+        # activity, tx, duration
         db_keywords = [
-            "db", "database", "mysql", "mariadb", "postgres", "postgresql",
-            "aurora", "rds", "sql", "query", "connection", "connections",
+            "db", "database", "mysql", "mariadb", "postgres", "postgresql", "activity",
+            "aurora", "rds", "sql", "query", "connection", "connections", "tx", "duration"
         ]
         kafka_keywords = [
             "kafka", "topic", "partition", "consumer", "producer", "broker",
