@@ -194,6 +194,10 @@ class GrafanaClient:
             for panel in panels:
                 if not isinstance(panel, dict):
                     continue
+                # Row panels are containers, not queryable metrics panels.
+                if panel.get("type") == "row":
+                    walk(panel.get("panels"))
+                    continue
                 # rows may contain nested panels
                 children = panel.get("panels")
                 if children:
