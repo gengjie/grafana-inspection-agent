@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Callable
 
 import ssl
 
@@ -26,15 +26,79 @@ class LLMClient:
 
     _TOKEN_REFRESH_BUFFER_SECONDS = 60
 
-    async def generate_db_kafka_panel_analysis(self, inspection_data: dict[str, Any]) -> str:
-        """挑选数据库与Kafka相关的主面板并生成健康分析文本。"""
+    async def _run_chunk_subagents(
+        self,
+        *,
+        chunks: list[list[str]],
+        system_prompt: str,
+        prompt_builder: Callable[[str], str],
+        max_tokens: int,
+        task_name: str,
+        concurrency: int = 3,
+        log_prompt: bool = False,
+    ) -> list[str]:
+        """Run chunked LLM tasks using a main-agent/subagent-style scheduler.
+
+        Main agent responsibilities:
+        - split work into chunks (already done by caller)
+        - schedule subagents with bounded concurrency
+        - collect and merge subagent outputs
+
+        Subagent responsibilities:
+        - render prompt for one chunk
+        - call LLM once and return chunk result
+        """
+        if not chunks:
+            return []
+
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+
+        async def run_subagent(chunk_index: int, chunk: list[str]) -> str:
+            panel_block = "\n".join(chunk)
+            prompt = prompt_builder(panel_block)
+            try:
+                if log_prompt:
+                    logger.info(
+                        "%s subagent prompt (chunk=%s, size=%s): %s",
+                        task_name,
+                        chunk_index,
+                        len(chunk),
+                        prompt,
+                    )
+                return await self._chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=max_tokens,
+                )
+            except Exception as e:
+                logger.error(
+                    "%s subagent failed (chunk=%s): %s",
+                    task_name,
+                    chunk_index,
+                    e,
+                    exc_info=True,
+                )
+                return ""
+
+        async def sem_run(chunk_index: int, chunk: list[str]) -> str:
+            async with semaphore:
+                return await run_subagent(chunk_index, chunk)
+
+        tasks = [sem_run(idx, chunk) for idx, chunk in enumerate(chunks, start=1)]
+        return await asyncio.gather(*tasks)
+
+    def prepare_db_kafka_chunk_jobs(
+        self,
+        inspection_data: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Prepare DB/Kafka chunk jobs for graph-level subagent scheduling."""
         dashboards = inspection_data.get("dashboards", [])
         lookback = inspection_data.get("lookback_period", {})
         start_ts = lookback.get("start", "")
         end_ts = lookback.get("end", "")
 
-        # add additional keywords related to DB/Kafka panels based on common naming conventions and data source types
-        # activity, tx, duration
         db_keywords = [
             "db", "database", "mysql", "mariadb", "postgres", "postgresql", "activity",
             "aurora", "rds", "sql", "query", "connection", "connections", "tx", "duration"
@@ -55,7 +119,6 @@ class LLMClient:
                     break
                 panel_title = panel.get("title", "Unknown") or "Unknown"
                 panel_type = panel.get("type", "") or ""
-                # Combine searchable text
                 target_texts = []
                 for t in panel.get("targets", []) or []:
                     target_texts.append(
@@ -82,9 +145,10 @@ class LLMClient:
 
         if not relevant:
             return (
+                [],
                 "No database or Kafka related panels found for analysis."
                 if self.language == "en"
-                else "无数据库或Kafka相关的面板可供分析。"
+                else "无数据库或Kafka相关的面板可供分析。",
             )
 
         lines = []
@@ -104,7 +168,6 @@ class LLMClient:
                     f"Targets: {tgt} | Metrics: {metrics_summary}"
                 )
 
-        # Chunk panel list to avoid token overflow; analyze chunks in parallel then merge
         chunk_size = 8
         panel_chunks = [lines[i : i + chunk_size] for i in range(0, len(lines), chunk_size)]
 
@@ -133,30 +196,177 @@ class LLMClient:
             )
             system_prompt = "你是一名资深SRE，熟悉数据库与Kafka常见故障模式与运维要点。"
 
-        async def run_chunk(chunk: list[str]) -> str:
+        jobs = []
+        for chunk in panel_chunks:
             panel_block = "\n".join(chunk)
-            prompt = template.format(panel_block=panel_block)
-            try:
-                logger.info(f"PANEL ANALYSIS PROMPT (chunk size={len(chunk)}): {prompt}")
-                return await self._chat_completion(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_tokens=min(self.max_tokens, 1200),
+            jobs.append(
+                {
+                    "task_name": "db_kafka_analysis",
+                    "system_prompt": system_prompt,
+                    "prompt": template.format(panel_block=panel_block),
+                    "max_tokens": min(self.max_tokens, 1200),
+                    "log_prompt": True,
+                }
+            )
+
+        return jobs, None
+
+    def prepare_jvm_chunk_jobs(
+        self,
+        inspection_data: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Prepare JVM chunk jobs for graph-level subagent scheduling."""
+        dashboards = inspection_data.get("dashboards", [])
+        lookback = inspection_data.get("lookback_period", {})
+        start_ts = lookback.get("start", "")
+        end_ts = lookback.get("end", "")
+
+        jvm_keywords = [
+            "jvm", "heap", "non-heap", "nonheap", "gc", "garbage",
+            "eden", "survivor", "old gen", "tenured", "metaspace",
+            "codecache", "code cache", "thread", "class loading",
+            "jvm_memory", "jvm_gc", "jvm_threads", "jvm_buffer",
+            "process_cpu", "hikari", "tomcat", "java_lang",
+            "direct_buffer", "mapped_buffer", "g1", "young gen",
+        ]
+
+        relevant: list[dict[str, Any]] = []
+        max_panels = 40
+
+        for dash in dashboards:
+            dash_title = dash.get("title", "Unknown")
+            dash_uid = dash.get("uid", "")
+            for panel in dash.get("panels", []):
+                if len(relevant) >= max_panels:
+                    break
+                panel_title = panel.get("title", "Unknown") or "Unknown"
+                panel_type = panel.get("type", "") or ""
+                target_texts: list[str] = []
+                for t in panel.get("targets", []) or []:
+                    target_texts.append(
+                        str(t.get("expr") or t.get("query") or t.get("datasource") or "")
+                    )
+                search_blob = " ".join([panel_title, panel_type] + target_texts).lower()
+                if any(k in search_blob for k in jvm_keywords):
+                    relevant.append({
+                        "dashboard": dash_title,
+                        "dashboard_uid": dash_uid,
+                        "panel_id": panel.get("id"),
+                        "panel_title": panel_title,
+                        "panel_type": panel_type,
+                        "targets": target_texts,
+                        "metrics": panel.get("metrics") or [],
+                    })
+
+        if not relevant:
+            return (
+                [],
+                "No JVM related panels found for analysis."
+                if self.language == "en"
+                else "无JVM相关的面板可供分析。",
+            )
+
+        lines: list[str] = []
+        for item in relevant:
+            tgt = "; ".join(item["targets"]) if item["targets"] else "(no targets)"
+            metrics_summary = self._format_metrics_summary(item.get("metrics"))
+            lines.append(
+                f"- Dashboard: {item['dashboard']} (UID: {item['dashboard_uid']}) | "
+                f"Panel: {item['panel_title']} (ID: {item['panel_id']}, Type: {item['panel_type']}) | "
+                f"Targets: {tgt} | Metrics: {metrics_summary}"
+            )
+
+        chunk_size = 10
+        panel_chunks = [lines[i : i + chunk_size] for i in range(0, len(lines), chunk_size)]
+
+        if self.language == "en":
+            system_prompt = (
+                "You are a senior JVM performance engineer. Analyze these Grafana JVM panels "
+                "and provide a professional health assessment covering heap/GC/threads/metaspace."
+            )
+            template = (
+                "Analyze the following JVM-related Grafana panels. Provide a professional JVM health report.\n\n"
+                f"Inspection time range: {start_ts} to {end_ts}\n\n"
+                "Panels:\n{{panel_block}}\n\n"
+                "Requirements:\n"
+                "1) Assess heap memory, GC behavior, thread health, metaspace, and class loading\n"
+                "2) Identify anomalies and provide severity ratings\n"
+                "3) Provide tuning recommendations with concrete JVM flags\n"
+                "4) Use formal, concise English\n"
+            )
+        else:
+            system_prompt = (
+                "你是一名资深JVM性能工程师，擅长JVM调优与故障排查。请基于Grafana面板数据"
+                "给出专业的JVM健康分析报告，涵盖堆内存、GC行为、线程、Metaspace等维度。"
+            )
+            template = (
+                "请分析以下JVM相关的Grafana面板数据，给出专业的JVM健康分析报告。\n\n"
+                f"巡检时间范围：{start_ts} 至 {end_ts}\n\n"
+                "面板数据：\n{{panel_block}}\n\n"
+                "要求：\n"
+                "1）分维度评估：堆内存、GC行为、线程健康、Metaspace、类加载\n"
+                "2）识别异常指标，给出严重程度评级（🔴严重/🟡警告/🟢正常/⚪数据缺失）\n"
+                "3）给出综合健康评级表格\n"
+                "4）提供具体的JVM调优建议（含JVM参数）\n"
+                "5）使用正式、简洁的中文\n"
+            )
+
+        jobs = []
+        for chunk in panel_chunks:
+            panel_block = "\n".join(chunk)
+            jobs.append(
+                {
+                    "task_name": "jvm_report",
+                    "system_prompt": system_prompt,
+                    "prompt": template.replace("{panel_block}", panel_block),
+                    "max_tokens": min(self.max_tokens, 4000),
+                    "log_prompt": False,
+                }
+            )
+
+        return jobs, None
+
+    async def run_chunk_job(self, job: dict[str, Any]) -> str:
+        """Execute one chunk job as a subagent unit."""
+        task_name = str(job.get("task_name") or "chunk_task")
+        prompt = str(job.get("prompt") or "")
+        system_prompt = str(job.get("system_prompt") or "")
+        max_tokens = int(job.get("max_tokens") or self.max_tokens)
+        log_prompt = bool(job.get("log_prompt", False))
+        chunk_index = job.get("chunk_index")
+
+        try:
+            if log_prompt:
+                logger.info(
+                    "%s subagent prompt (chunk=%s): %s",
+                    task_name,
+                    chunk_index,
+                    prompt,
                 )
-            except Exception as e:
-                logger.error("Failed to generate DB/Kafka panel analysis chunk: %s", e, exc_info=True)
-                return ""
+            return await self._chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            logger.error(
+                "%s subagent failed (chunk=%s): %s",
+                task_name,
+                chunk_index,
+                e,
+                exc_info=True,
+            )
+            return ""
 
-        # Limit parallelism to avoid flooding the LLM endpoint
-        semaphore = asyncio.Semaphore(3)
+    async def generate_db_kafka_panel_analysis(self, inspection_data: dict[str, Any]) -> str:
+        """挑选数据库与Kafka相关的主面板并生成健康分析文本。"""
+        jobs, fallback_text = self.prepare_db_kafka_chunk_jobs(inspection_data)
+        if fallback_text is not None:
+            return fallback_text
 
-        async def sem_run(chunk: list[str]) -> str:
-            async with semaphore:
-                return await run_chunk(chunk)
-
-        chunk_results = await asyncio.gather(*[sem_run(c) for c in panel_chunks])
+        chunk_results = await asyncio.gather(*[self.run_chunk_job(job) for job in jobs])
         merged = "\n\n".join(r for r in chunk_results if r)
         if not merged:
             return "数据库/Kafka 面板分析生成失败。"
@@ -352,129 +562,20 @@ class LLMClient:
 
     async def generate_jvm_report(self, inspection_data: dict[str, Any]) -> str:
         """筛选 JVM 相关面板并生成 JVM 健康分析报告。"""
-        dashboards = inspection_data.get("dashboards", [])
-        lookback = inspection_data.get("lookback_period", {})
-        start_ts = lookback.get("start", "")
-        end_ts = lookback.get("end", "")
+        jobs, fallback_text = self.prepare_jvm_chunk_jobs(inspection_data)
+        if fallback_text is not None:
+            return fallback_text
 
-        jvm_keywords = [
-            "jvm", "heap", "non-heap", "nonheap", "gc", "garbage",
-            "eden", "survivor", "old gen", "tenured", "metaspace",
-            "codecache", "code cache", "thread", "class loading",
-            "jvm_memory", "jvm_gc", "jvm_threads", "jvm_buffer",
-            "process_cpu", "hikari", "tomcat", "java_lang",
-            "direct_buffer", "mapped_buffer", "g1", "young gen",
-        ]
-
-        relevant: list[dict[str, Any]] = []
-        max_panels = 40
-
-        for dash in dashboards:
-            dash_title = dash.get("title", "Unknown")
-            dash_uid = dash.get("uid", "")
-            for panel in dash.get("panels", []):
-                if len(relevant) >= max_panels:
-                    break
-                panel_title = panel.get("title", "Unknown") or "Unknown"
-                panel_type = panel.get("type", "") or ""
-                target_texts: list[str] = []
-                for t in panel.get("targets", []) or []:
-                    target_texts.append(
-                        str(t.get("expr") or t.get("query") or t.get("datasource") or "")
-                    )
-                search_blob = " ".join([panel_title, panel_type] + target_texts).lower()
-                if any(k in search_blob for k in jvm_keywords):
-                    relevant.append({
-                        "dashboard": dash_title,
-                        "dashboard_uid": dash_uid,
-                        "panel_id": panel.get("id"),
-                        "panel_title": panel_title,
-                        "panel_type": panel_type,
-                        "targets": target_texts,
-                        "metrics": panel.get("metrics") or [],
-                    })
-
-        if not relevant:
-            return (
-                "No JVM related panels found for analysis."
-                if self.language == "en"
-                else "无JVM相关的面板可供分析。"
-            )
-
-        lines: list[str] = []
-        for item in relevant:
-            tgt = "; ".join(item["targets"]) if item["targets"] else "(no targets)"
-            metrics_summary = self._format_metrics_summary(item.get("metrics"))
-            lines.append(
-                f"- Dashboard: {item['dashboard']} (UID: {item['dashboard_uid']}) | "
-                f"Panel: {item['panel_title']} (ID: {item['panel_id']}, Type: {item['panel_type']}) | "
-                f"Targets: {tgt} | Metrics: {metrics_summary}"
-            )
-
-        chunk_size = 10
-        panel_chunks = [lines[i : i + chunk_size] for i in range(0, len(lines), chunk_size)]
-
-        if self.language == "en":
-            system_prompt = (
-                "You are a senior JVM performance engineer. Analyze these Grafana JVM panels "
-                "and provide a professional health assessment covering heap/GC/threads/metaspace."
-            )
-            template = (
-                "Analyze the following JVM-related Grafana panels. Provide a professional JVM health report.\n\n"
-                f"Inspection time range: {start_ts} to {end_ts}\n\n"
-                "Panels:\n{{panel_block}}\n\n"
-                "Requirements:\n"
-                "1) Assess heap memory, GC behavior, thread health, metaspace, and class loading\n"
-                "2) Identify anomalies and provide severity ratings\n"
-                "3) Provide tuning recommendations with concrete JVM flags\n"
-                "4) Use formal, concise English\n"
-            )
-        else:
-            system_prompt = (
-                "你是一名资深JVM性能工程师，擅长JVM调优与故障排查。请基于Grafana面板数据"
-                "给出专业的JVM健康分析报告，涵盖堆内存、GC行为、线程、Metaspace等维度。"
-            )
-            template = (
-                "请分析以下JVM相关的Grafana面板数据，给出专业的JVM健康分析报告。\n\n"
-                f"巡检时间范围：{start_ts} 至 {end_ts}\n\n"
-                "面板数据：\n{{panel_block}}\n\n"
-                "要求：\n"
-                "1）分维度评估：堆内存、GC行为、线程健康、Metaspace、类加载\n"
-                "2）识别异常指标，给出严重程度评级（🔴严重/🟡警告/🟢正常/⚪数据缺失）\n"
-                "3）给出综合健康评级表格\n"
-                "4）提供具体的JVM调优建议（含JVM参数）\n"
-                "5）使用正式、简洁的中文\n"
-            )
-
-        async def run_chunk(chunk: list[str]) -> str:
-            panel_block = "\n".join(chunk)
-            prompt = template.replace("{panel_block}", panel_block)
-            try:
-                return await self._chat_completion(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    max_tokens=min(self.max_tokens, 4000),
-                )
-            except Exception as e:
-                logger.error("Failed to generate JVM report chunk: %s", e, exc_info=True)
-                return ""
-
-        semaphore = asyncio.Semaphore(3)
-
-        async def sem_run(chunk: list[str]) -> str:
-            async with semaphore:
-                return await run_chunk(chunk)
-
-        chunk_results = await asyncio.gather(*[sem_run(c) for c in panel_chunks])
+        chunk_results = await asyncio.gather(*[self.run_chunk_job(job) for job in jobs])
         merged = "\n\n".join(r for r in chunk_results if r)
         if not merged:
             return "JVM健康分析报告生成失败。" if self.language != "en" else "Failed to generate JVM health report."
         return merged
 
     async def generate_dashboard_summary(
-        self, inspection_data: dict[str, Any]
+        self,
+        inspection_data: dict[str, Any],
+        db_kafka_analysis: str | None = None,
     ) -> str:
         """Generate summary for dashboard inspection.
 
@@ -484,7 +585,8 @@ class LLMClient:
         Returns:
             Generated summary text
         """
-        db_kafka_analysis = await self.generate_db_kafka_panel_analysis(inspection_data)
+        if db_kafka_analysis is None:
+            db_kafka_analysis = await self.generate_db_kafka_panel_analysis(inspection_data)
 
         if self.language == "en":
             prompt = f"""Please generate a concise summary report based on the following Grafana Dashboard inspection data, and include the DB/Kafka panel health analysis below.

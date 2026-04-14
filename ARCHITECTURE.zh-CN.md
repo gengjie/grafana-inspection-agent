@@ -53,18 +53,34 @@ flowchart TD
     D -->|失败| Z1[退出: return 1]
 
     E --> F[inspect 节点: Grafana 采集]
-    F --> G[summarize 节点: 生成 Dashboard/Alert 总结]
-    F --> H[jvm_report 节点: JVM 专项分析]
-    G --> I[build_report 节点: 构建日报与邮件内容]
-    H --> I
+
+    F --> G1[db_kafka_prepare]
+    G1 --> G2{route_db_kafka_chunks}
+    G2 -->|有 chunks| G3[db_kafka_chunk_worker x N]
+    G3 --> G4[db_kafka_collect]
+    G2 -->|无 chunks| G4
+    G4 --> G5[dashboard_summary]
+
+    F --> H1[alert_summary]
+
+    F --> J1[jvm_prepare]
+    J1 --> J2{route_jvm_chunks}
+    J2 -->|有 chunks| J3[jvm_chunk_worker x N]
+    J3 --> J4[jvm_collect]
+    J2 -->|无 chunks| J4
+
+    G5 --> I[build_report 节点: 构建日报与邮件内容]
+    H1 --> I
+    J4 --> I
     I --> J[notify 节点: Email/Teams 发送]
     J --> K[日志输出 + return 0]
 ```
 
 说明：
 
-- `summarize` 与 `jvm_report` 从 `inspect` 后并行执行
-- `build_report` 需要等待两条并行分支都完成
+  - DB/Kafka 与 JVM 两条分支都在图内执行 `prepare -> route -> worker -> collect` 的 map-reduce
+  - `dashboard_summary` 依赖 `db_kafka_collect`，`alert_summary` 独立并行
+  - `build_report` 需要等待 `dashboard_summary`、`alert_summary`、`jvm_collect`
 - `notify` 同时支持日报与 JVM 报告的二次发送
 
 ---
@@ -144,18 +160,29 @@ sequenceDiagram
     G->>ExtG: /ruler/*, /alertmanager/*
     ExtG-->>G: rules/instances/history
 
-    par 并行分析
-        WF->>LLM: generate_dashboard_summary(...)
+    par 并行分析分支
+      WF->>LLM: prepare_db_kafka_chunk_jobs(...)
+      loop map: each chunk
+        WF->>LLM: run_chunk_job(db_kafka_chunk_i)
         LLM->>ExtC: /chat/completions
-        ExtC-->>LLM: dashboard summary
+        ExtC-->>LLM: chunk result_i
+      end
+      WF->>WF: db_kafka_collect
+      WF->>LLM: generate_dashboard_summary(..., db_kafka_analysis)
+      LLM->>ExtC: /chat/completions
+      ExtC-->>LLM: dashboard summary
     and
-        WF->>LLM: generate_alert_summary(...)
+      WF->>LLM: generate_alert_summary(...)
+      LLM->>ExtC: /chat/completions
+      ExtC-->>LLM: alert summary
+    and
+      WF->>LLM: prepare_jvm_chunk_jobs(...)
+      loop map: each chunk
+        WF->>LLM: run_chunk_job(jvm_chunk_i)
         LLM->>ExtC: /chat/completions
-        ExtC-->>LLM: alert summary
-    and
-        WF->>LLM: generate_jvm_report(...)
-        LLM->>ExtC: /chat/completions (chunked)
-        ExtC-->>LLM: jvm report
+        ExtC-->>LLM: chunk result_i
+      end
+      WF->>WF: jvm_collect
     end
 
     WF->>RG: format_daily_report()
@@ -211,7 +238,10 @@ sequenceDiagram
 
 - 输入字段：`lookback_hours`
 - 采集结果：`dashboard_inspection`, `alert_inspection`
-- LLM结果：`dashboard_summary`, `alert_summary`, `jvm_report`
+- chunk map/reduce 字段：
+  - DB/Kafka：`db_kafka_chunk_jobs`, `db_kafka_chunk_job`, `db_kafka_chunk_results`, `db_kafka_analysis`
+  - JVM：`jvm_chunk_jobs`, `jvm_chunk_job`, `jvm_chunk_results`, `jvm_report`
+- LLM结果：`dashboard_summary`, `alert_summary`
 - 报告结果：`daily_report`, `email_subject`, `email_html`, `jvm_email_subject`, `jvm_email_html`
 - 发送结果：`notify_results`
 
@@ -219,9 +249,10 @@ sequenceDiagram
 
 $$
 S_{0}(lookback) \xrightarrow{inspect} S_{1}(dashboard, alert)
-\xrightarrow{summarize \parallel jvm} S_{2}(summary, jvm)
-\xrightarrow{build\_report} S_{3}(report, email)
-\xrightarrow{notify} S_{4}(delivery\_result)
+\xrightarrow{map/reduce_{db,kafka}} S_{2}(db\_kafka\_analysis)
+\xrightarrow{dashboard\_summary \parallel alert\_summary \parallel map/reduce_{jvm}} S_{3}(summary, jvm)
+\xrightarrow{build\_report} S_{4}(report, email)
+\xrightarrow{notify} S_{5}(delivery\_result)
 $$
 
 ---
@@ -232,9 +263,11 @@ $$
   - Dashboard 明细通过 `asyncio.gather` 并发拉取
   - Panel metrics 查询使用 `Semaphore(5)` 限流，避免压垮 Grafana
 - LLM 侧并发：
-  - DB/Kafka 与 JVM 分析均采用分块 + `Semaphore(3)` 并发请求
+  - DB/Kafka 与 JVM 分析均采用 chunk 任务，由 LangGraph `Send` 动态 fan-out
+  - 每个 chunk 对应一个 `*_chunk_worker` 节点执行单次 LLM 请求
 - 图编排并行：
-  - `summarize` 与 `jvm_report` 为图级并行节点
+  - `db_kafka_prepare`、`alert_summary`、`jvm_prepare` 三条分支图级并行
+  - DB/Kafka 与 JVM 分支内部都是图内 map-reduce
 
 ---
 
@@ -284,9 +317,10 @@ $$
 
 ## 12. 架构小结
 
-该项目采用“图编排 + 异步 I/O + 外部能力适配器”的设计：
+该项目采用“图编排 + 图内 map-reduce + 异步 I/O + 外部能力适配器”的设计：
 
 - 用 LangGraph 清晰表达依赖与并行关系
+- 用 `Send` 实现 chunk 级子代理动态调度与归并
 - 用独立客户端隔离 Grafana/LLM/通知细节
 - 用格式化层统一日报输出形态
 

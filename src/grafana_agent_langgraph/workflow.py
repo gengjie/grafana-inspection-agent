@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+import operator
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 
 from .config import AppConfig
 from .grafana_client import GrafanaClient
@@ -19,6 +21,13 @@ class InspectionState(TypedDict, total=False):
     lookback_hours: int
     dashboard_inspection: dict[str, Any]
     alert_inspection: dict[str, Any]
+    db_kafka_chunk_jobs: list[dict[str, Any]]
+    db_kafka_chunk_job: dict[str, Any]
+    db_kafka_chunk_results: Annotated[list[str], operator.add]
+    db_kafka_analysis: str
+    jvm_chunk_jobs: list[dict[str, Any]]
+    jvm_chunk_job: dict[str, Any]
+    jvm_chunk_results: Annotated[list[str], operator.add]
     dashboard_summary: str
     alert_summary: str
     jvm_report: str
@@ -71,24 +80,119 @@ class LangGraphDailyInspection:
             "alert_inspection": alerts,
         }
 
-    async def summarize_node(self, state: InspectionState) -> InspectionState:
-        """Generate dashboard/alert summaries through LLM."""
-        self.logger.info("Running node: summarize")
-        dashboard_summary = await self.llm_client.generate_dashboard_summary(
+    async def db_kafka_analysis_node(self, state: InspectionState) -> InspectionState:
+        """Prepare DB/Kafka chunk jobs for graph-level map scheduling."""
+        self.logger.info("Running node: db_kafka_prepare")
+        jobs, fallback_text = self.llm_client.prepare_db_kafka_chunk_jobs(
             state["dashboard_inspection"]
         )
-        alert_summary = await self.llm_client.generate_alert_summary(state["alert_inspection"])
-
+        if fallback_text is not None:
+            return {
+                "db_kafka_analysis": fallback_text,
+                "db_kafka_chunk_jobs": [],
+            }
+        for idx, job in enumerate(jobs, start=1):
+            job["chunk_index"] = idx
         return {
-            "dashboard_summary": dashboard_summary,
-            "alert_summary": alert_summary,
+            "db_kafka_chunk_jobs": jobs,
+            "db_kafka_chunk_results": [],
         }
 
-    async def jvm_report_node(self, state: InspectionState) -> InspectionState:
-        """Generate JVM health analysis report from dashboard data."""
-        self.logger.info("Running node: jvm_report")
-        jvm_report = await self.llm_client.generate_jvm_report(state["dashboard_inspection"])
-        return {"jvm_report": jvm_report}
+    async def db_kafka_chunk_worker_node(self, state: InspectionState) -> InspectionState:
+        """Execute one DB/Kafka chunk subagent."""
+        job = state.get("db_kafka_chunk_job") or {}
+        result = await self.llm_client.run_chunk_job(job)
+        return {"db_kafka_chunk_results": [result]}
+
+    async def db_kafka_collect_node(self, state: InspectionState) -> InspectionState:
+        """Reduce DB/Kafka chunk outputs into a single analysis text."""
+        if state.get("db_kafka_analysis"):
+            return {"db_kafka_analysis": state["db_kafka_analysis"]}
+
+        merged = "\n\n".join(r for r in (state.get("db_kafka_chunk_results") or []) if r)
+        if not merged:
+            merged = (
+                "Failed to generate DB/Kafka panel analysis."
+                if self.config.language == "en"
+                else "数据库/Kafka 面板分析生成失败。"
+            )
+        return {"db_kafka_analysis": merged}
+
+    async def dashboard_summary_node(self, state: InspectionState) -> InspectionState:
+        """Generate dashboard summary, reusing DB/Kafka subagent analysis."""
+        self.logger.info("Running node: dashboard_summary")
+        dashboard_summary = await self.llm_client.generate_dashboard_summary(
+            state["dashboard_inspection"],
+            db_kafka_analysis=state.get("db_kafka_analysis"),
+        )
+        return {"dashboard_summary": dashboard_summary}
+
+    async def alert_summary_node(self, state: InspectionState) -> InspectionState:
+        """Generate alert summary through LLM."""
+        self.logger.info("Running node: alert_summary")
+        alert_summary = await self.llm_client.generate_alert_summary(state["alert_inspection"])
+
+        return {"alert_summary": alert_summary}
+
+    async def jvm_prepare_node(self, state: InspectionState) -> InspectionState:
+        """Prepare JVM chunk jobs for graph-level map scheduling."""
+        self.logger.info("Running node: jvm_prepare")
+        jobs, fallback_text = self.llm_client.prepare_jvm_chunk_jobs(
+            state["dashboard_inspection"]
+        )
+        if fallback_text is not None:
+            return {
+                "jvm_report": fallback_text,
+                "jvm_chunk_jobs": [],
+            }
+        for idx, job in enumerate(jobs, start=1):
+            job["chunk_index"] = idx
+        return {
+            "jvm_chunk_jobs": jobs,
+            "jvm_chunk_results": [],
+        }
+
+    async def jvm_chunk_worker_node(self, state: InspectionState) -> InspectionState:
+        """Execute one JVM chunk subagent."""
+        job = state.get("jvm_chunk_job") or {}
+        result = await self.llm_client.run_chunk_job(job)
+        return {"jvm_chunk_results": [result]}
+
+    async def jvm_collect_node(self, state: InspectionState) -> InspectionState:
+        """Reduce JVM chunk outputs into a single JVM report."""
+        if state.get("jvm_report"):
+            return {"jvm_report": state["jvm_report"]}
+
+        merged = "\n\n".join(r for r in (state.get("jvm_chunk_results") or []) if r)
+        if not merged:
+            merged = (
+                "Failed to generate JVM health report."
+                if self.config.language == "en"
+                else "JVM健康分析报告生成失败。"
+            )
+        return {"jvm_report": merged}
+
+    def route_db_kafka_chunks(self, state: InspectionState):
+        """Route DB/Kafka branch: direct pass-through or dynamic map fan-out."""
+        if state.get("db_kafka_analysis"):
+            return "db_kafka_collect"
+
+        jobs = state.get("db_kafka_chunk_jobs") or []
+        if not jobs:
+            return "db_kafka_collect"
+
+        return [Send("db_kafka_chunk_worker", {"db_kafka_chunk_job": job}) for job in jobs]
+
+    def route_jvm_chunks(self, state: InspectionState):
+        """Route JVM branch: direct pass-through or dynamic map fan-out."""
+        if state.get("jvm_report"):
+            return "jvm_collect"
+
+        jobs = state.get("jvm_chunk_jobs") or []
+        if not jobs:
+            return "jvm_collect"
+
+        return [Send("jvm_chunk_worker", {"jvm_chunk_job": job}) for job in jobs]
 
     async def build_report_node(self, state: InspectionState) -> InspectionState:
         """Build final report and email HTML."""
@@ -161,18 +265,35 @@ class LangGraphDailyInspection:
         """Compile the graph topology."""
         graph = StateGraph(InspectionState)
         graph.add_node("inspect", self.inspect_node)
-        graph.add_node("summarize", self.summarize_node)
-        graph.add_node("jvm_report", self.jvm_report_node)
+        graph.add_node("db_kafka_prepare", self.db_kafka_analysis_node)
+        graph.add_node("db_kafka_chunk_worker", self.db_kafka_chunk_worker_node)
+        graph.add_node("db_kafka_collect", self.db_kafka_collect_node)
+        graph.add_node("dashboard_summary", self.dashboard_summary_node)
+        graph.add_node("alert_summary", self.alert_summary_node)
+        graph.add_node("jvm_prepare", self.jvm_prepare_node)
+        graph.add_node("jvm_chunk_worker", self.jvm_chunk_worker_node)
+        graph.add_node("jvm_collect", self.jvm_collect_node)
         graph.add_node("build_report", self.build_report_node)
         graph.add_node("notify", self.notify_node)
 
         graph.add_edge(START, "inspect")
-        # After inspect, run summarize and jvm_report in parallel
-        graph.add_edge("inspect", "summarize")
-        graph.add_edge("inspect", "jvm_report")
-        # Both must finish before build_report
-        graph.add_edge("summarize", "build_report")
-        graph.add_edge("jvm_report", "build_report")
+        # After inspect, run branch analyses in parallel
+        graph.add_edge("inspect", "db_kafka_prepare")
+        graph.add_edge("inspect", "alert_summary")
+        graph.add_edge("inspect", "jvm_prepare")
+
+        graph.add_conditional_edges("db_kafka_prepare", self.route_db_kafka_chunks)
+        graph.add_edge("db_kafka_chunk_worker", "db_kafka_collect")
+        # Dashboard summary depends on DB/Kafka map-reduce branch
+        graph.add_edge("db_kafka_collect", "dashboard_summary")
+
+        graph.add_conditional_edges("jvm_prepare", self.route_jvm_chunks)
+        graph.add_edge("jvm_chunk_worker", "jvm_collect")
+
+        # build_report waits for all report ingredients
+        graph.add_edge("dashboard_summary", "build_report")
+        graph.add_edge("alert_summary", "build_report")
+        graph.add_edge("jvm_collect", "build_report")
         graph.add_edge("build_report", "notify")
         graph.add_edge("notify", END)
         return graph.compile()
