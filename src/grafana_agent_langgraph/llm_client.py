@@ -567,10 +567,78 @@ class LLMClient:
             return fallback_text
 
         chunk_results = await asyncio.gather(*[self.run_chunk_job(job) for job in jobs])
-        merged = "\n\n".join(r for r in chunk_results if r)
-        if not merged:
-            return "JVM健康分析报告生成失败。" if self.language != "en" else "Failed to generate JVM health report."
-        return merged
+        return await self.reduce_jvm_chunk_results(chunk_results, inspection_data)
+
+    async def reduce_jvm_chunk_results(
+        self,
+        chunk_results: list[str],
+        inspection_data: dict[str, Any] | None = None,
+    ) -> str:
+        """Aggregate JVM chunk outputs into one final report (reduce stage)."""
+        valid_results = [r.strip() for r in chunk_results if isinstance(r, str) and r.strip()]
+        if not valid_results:
+            return (
+                "Failed to generate JVM health report."
+                if self.language == "en"
+                else "JVM健康分析报告生成失败。"
+            )
+
+        if len(valid_results) == 1:
+            return valid_results[0]
+
+        lookback = (inspection_data or {}).get("lookback_period", {})
+        start_ts = lookback.get("start", "")
+        end_ts = lookback.get("end", "")
+        chunks_text = "\n\n".join(
+            f"[Chunk {idx}]\n{content}" for idx, content in enumerate(valid_results, start=1)
+        )
+
+        if self.language == "en":
+            system_prompt = (
+                "You are a principal JVM performance engineer. "
+                "Merge multiple sub-reports into one consistent final JVM health report."
+            )
+            prompt = (
+                "Merge the following JVM chunk analysis outputs into one final report.\n\n"
+                f"Inspection time range: {start_ts} to {end_ts}\n\n"
+                "Chunk outputs:\n"
+                f"{chunks_text}\n\n"
+                "Requirements:\n"
+                "1) Deduplicate repeated findings and resolve conflicts with explicit rationale\n"
+                "2) Keep dimensions: heap, GC, threads, metaspace, class loading\n"
+                "3) Include severity labels and an overall health rating\n"
+                "4) Provide actionable tuning recommendations with concrete JVM flags\n"
+                "5) Output concise, formal English\n"
+            )
+        else:
+            system_prompt = (
+                "你是一名首席JVM性能工程师。"
+                "请将多个分片子报告聚合为一份一致、可执行的最终JVM健康报告。"
+            )
+            prompt = (
+                "请将以下JVM分片分析结果聚合为一份最终报告。\n\n"
+                f"巡检时间范围：{start_ts} 至 {end_ts}\n\n"
+                "分片输出：\n"
+                f"{chunks_text}\n\n"
+                "要求：\n"
+                "1）去重并合并重复结论，若结论冲突请给出取舍依据\n"
+                "2）保持维度完整：堆内存、GC、线程、Metaspace、类加载\n"
+                "3）给出严重程度标注与总体健康评级\n"
+                "4）提供可执行调优建议，包含具体JVM参数\n"
+                "5）使用正式、简洁中文输出\n"
+            )
+
+        try:
+            return await self._chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=min(self.max_tokens, 4000),
+            )
+        except Exception as e:
+            logger.error("Failed to reduce JVM chunk outputs: %s", e, exc_info=True)
+            return "\n\n".join(valid_results)
 
     async def generate_dashboard_summary(
         self,

@@ -6,8 +6,8 @@ An automated Grafana inspection system orchestrated by **LangGraph StateGraph**.
 
 - **Dashboard Auto-Inspection** — Parallel metric collection across all panels with LLM-generated summaries
 - **Alert Monitoring** — Full analysis of alert rules, active alerts, and alert history
-- **DB/Kafka Panel Health Analysis** — Auto-filters database/Kafka panels, chunked parallel analysis
-- **JVM Health Report** — Filters JVM-related panels (Heap, GC, Thread, Metaspace, etc.) for a dedicated report
+- **DB/Kafka Panel Health Analysis** — Auto-filters database/Kafka panels, runs chunked map workers, then collect-merges chunk outputs as dashboard summary input
+- **JVM Health Report** — Filters JVM-related panels (Heap, GC, Thread, Metaspace, etc.), runs chunked map workers, and performs final reduce aggregation
 - **Multi-Channel Notification** — Email (aiosmtplib) + Microsoft Teams (Webhook)
 - **Multi-Language** — Chinese / English reports
 - **Long-Term Memory** — Local storage via mem0 for cross-day trend comparison
@@ -19,31 +19,34 @@ An automated Grafana inspection system orchestrated by **LangGraph StateGraph**.
 START
   │
   ▼
-[inspect] ─── Grafana data collection (Dashboard + Alert)
+[inspect] ─── collect Dashboard + Alert
   │
-  ├──────────────┐
-  ▼              ▼
-[summarize]  [jvm_report]    ← parallel execution
-  │              │
-  └──────┬───────┘
-         ▼
-   [build_report] ─── Format plain text / HTML email / JVM email
-         │
-         ▼
-     [notify] ─── Email + Teams delivery
-         │
-         ▼
-        END
+  ├──────────► [db_kafka_prepare] ─► [route_db_kafka_chunks]
+  │                                  ├─(chunks)─► [db_kafka_chunk_worker x N] ─► [db_kafka_collect] ─► [dashboard_summary]
+  │                                  └─(no chunks)─────────────────────────────► [db_kafka_collect] ─► [dashboard_summary]
+  │
+  ├──────────► [alert_summary]
+  │
+  └──────────► [jvm_prepare] ─► [route_jvm_chunks]
+                                     ├─(chunks)─► [jvm_chunk_worker x N] ─► [jvm_collect (LLM reduce)]
+                                     └─(no chunks)────────────────────────► [jvm_collect]
+
+[dashboard_summary] + [alert_summary] + [jvm_collect]
+                      └──────────────────────────────► [build_report] ─► [notify] ─► END
 ```
+
+Notes:
+- DB/Kafka branch uses graph-level chunk map and collect merge (deterministic text merge in `db_kafka_collect`, no extra LLM reduce call).
+- JVM branch uses graph-level chunk map and an explicit reduce aggregation step (LLM-based merge) in `jvm_collect`.
 
 ## Project Structure
 
 ```
 src/grafana_agent_langgraph/
 ├── main.py              # CLI entry point, preflight checks + workflow launch
-├── workflow.py           # LangGraph StateGraph definition (5 nodes)
+├── workflow.py           # LangGraph StateGraph definition (inspect + parallel branches + map/collect nodes)
 ├── grafana_client.py     # Grafana API async client (Dashboard / Alert / Metrics)
-├── llm_client.py         # GitHub Copilot LLM client (token exchange + analysis)
+├── llm_client.py         # GitHub Copilot LLM client (token exchange + chunk worker + JVM reducer)
 ├── report_generator.py   # Report formatting (plain text / HTML email / Teams card)
 ├── notifier.py           # Multi-channel notification (Email + Teams)
 ├── config.py             # Pydantic config models (YAML + env var override)

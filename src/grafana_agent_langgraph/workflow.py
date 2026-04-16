@@ -163,13 +163,10 @@ class LangGraphDailyInspection:
         if state.get("jvm_report"):
             return {"jvm_report": state["jvm_report"]}
 
-        merged = "\n\n".join(r for r in (state.get("jvm_chunk_results") or []) if r)
-        if not merged:
-            merged = (
-                "Failed to generate JVM health report."
-                if self.config.language == "en"
-                else "JVM健康分析报告生成失败。"
-            )
+        merged = await self.llm_client.reduce_jvm_chunk_results(
+            state.get("jvm_chunk_results") or [],
+            state.get("dashboard_inspection"),
+        )
         return {"jvm_report": merged}
 
     def route_db_kafka_chunks(self, state: InspectionState):

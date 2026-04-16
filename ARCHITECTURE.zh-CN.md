@@ -57,7 +57,7 @@ flowchart TD
     F --> G1[db_kafka_prepare]
     G1 --> G2{route_db_kafka_chunks}
     G2 -->|有 chunks| G3[db_kafka_chunk_worker x N]
-    G3 --> G4[db_kafka_collect]
+    G3 --> G4[db_kafka_collect: 文本归并]
     G2 -->|无 chunks| G4
     G4 --> G5[dashboard_summary]
 
@@ -66,7 +66,7 @@ flowchart TD
     F --> J1[jvm_prepare]
     J1 --> J2{route_jvm_chunks}
     J2 -->|有 chunks| J3[jvm_chunk_worker x N]
-    J3 --> J4[jvm_collect]
+    J3 --> J4[jvm_collect: LLM reduce 聚合]
     J2 -->|无 chunks| J4
 
     G5 --> I[build_report 节点: 构建日报与邮件内容]
@@ -78,7 +78,9 @@ flowchart TD
 
 说明：
 
-  - DB/Kafka 与 JVM 两条分支都在图内执行 `prepare -> route -> worker -> collect` 的 map-reduce
+  - DB/Kafka 与 JVM 两条分支都在图内执行 `prepare -> route -> worker -> collect`
+  - DB/Kafka 分支在 `db_kafka_collect` 节点执行确定性文本归并，不额外触发 LLM reduce 请求
+  - JVM 分支在 `jvm_collect` 节点执行 LLM reduce 聚合（去重、冲突消解、统一评级与建议）
   - `dashboard_summary` 依赖 `db_kafka_collect`，`alert_summary` 独立并行
   - `build_report` 需要等待 `dashboard_summary`、`alert_summary`、`jvm_collect`
 - `notify` 同时支持日报与 JVM 报告的二次发送
@@ -167,6 +169,7 @@ sequenceDiagram
         LLM->>ExtC: /chat/completions
         ExtC-->>LLM: chunk result_i
       end
+      WF->>WF: merge chunk texts (db_kafka_collect)
       WF->>WF: db_kafka_collect
       WF->>LLM: generate_dashboard_summary(..., db_kafka_analysis)
       LLM->>ExtC: /chat/completions
@@ -182,6 +185,9 @@ sequenceDiagram
         LLM->>ExtC: /chat/completions
         ExtC-->>LLM: chunk result_i
       end
+      WF->>LLM: reduce_jvm_chunk_results(chunk_results)
+      LLM->>ExtC: /chat/completions
+      ExtC-->>LLM: reduced jvm report
       WF->>WF: jvm_collect
     end
 
@@ -265,6 +271,8 @@ $$
 - LLM 侧并发：
   - DB/Kafka 与 JVM 分析均采用 chunk 任务，由 LangGraph `Send` 动态 fan-out
   - 每个 chunk 对应一个 `*_chunk_worker` 节点执行单次 LLM 请求
+  - DB/Kafka 分支在 collect 阶段仅归并子结果，随后将结果注入 `dashboard_summary` 的提示词上下文
+  - JVM 分支在 fan-out 完成后追加一次 LLM reduce 请求，用于聚合 chunk 子报告
 - 图编排并行：
   - `db_kafka_prepare`、`alert_summary`、`jvm_prepare` 三条分支图级并行
   - DB/Kafka 与 JVM 分支内部都是图内 map-reduce

@@ -6,8 +6,8 @@
 
 - **Dashboard 自动巡检** — 并行采集所有面板指标数据，LLM 生成摘要
 - **告警监控** — 告警规则、活跃告警、历史告警全量分析
-- **DB/Kafka 面板健康分析** — 自动筛选数据库/Kafka 相关面板，分块并行分析
-- **JVM 健康分析报告** — 筛选 JVM 相关面板（Heap、GC、Thread、Metaspace 等），生成专项报告
+- **DB/Kafka 面板健康分析** — 自动筛选数据库/Kafka 相关面板，分块并行 map 分析后在 collect 节点归并，作为 Dashboard 总结输入
+- **JVM 健康分析报告** — 筛选 JVM 相关面板（Heap、GC、Thread、Metaspace 等），分块并行分析后执行 reduce 聚合生成最终专项报告
 - **多渠道通知** — Email（aiosmtplib）+ Microsoft Teams（Webhook）
 - **多语言** — 中文 / 英文报告
 - **长期记忆** — 基于 mem0 本地存储，支持跨天趋势对比
@@ -19,31 +19,34 @@
 START
   │
   ▼
-[inspect] ─── Grafana 数据采集（Dashboard + Alert）
+[inspect] ─── 采集 Dashboard + Alert
   │
-  ├──────────────┐
-  ▼              ▼
-[summarize]  [jvm_report]    ← 并行执行
-  │              │
-  └──────┬───────┘
-         ▼
-   [build_report] ─── 格式化纯文本 / HTML 邮件 / JVM 邮件
-         │
-         ▼
-     [notify] ─── Email + Teams 推送
-         │
-         ▼
-        END
+  ├──────────► [db_kafka_prepare] ─► [route_db_kafka_chunks]
+  │                                  ├─(有 chunks)─► [db_kafka_chunk_worker x N] ─► [db_kafka_collect] ─► [dashboard_summary]
+  │                                  └─(无 chunks)────────────────────────────────► [db_kafka_collect] ─► [dashboard_summary]
+  │
+  ├──────────► [alert_summary]
+  │
+  └──────────► [jvm_prepare] ─► [route_jvm_chunks]
+                                     ├─(有 chunks)─► [jvm_chunk_worker x N] ─► [jvm_collect (LLM reduce 聚合)]
+                                     └─(无 chunks)───────────────────────────► [jvm_collect]
+
+[dashboard_summary] + [alert_summary] + [jvm_collect]
+                      └──────────────────────────────► [build_report] ─► [notify] ─► END
 ```
+
+说明：
+- DB/Kafka 分支采用图内 chunk map + collect 合并（`db_kafka_collect` 为确定性文本归并，不追加 LLM reduce 调用）。
+- JVM 分支采用图内 chunk map，并在 `jvm_collect` 节点执行 LLM reduce 聚合，输出统一 JVM 报告。
 
 ## 项目结构
 
 ```
 src/grafana_agent_langgraph/
 ├── main.py              # CLI 入口，预检查 + 启动工作流
-├── workflow.py           # LangGraph StateGraph 定义（5 节点）
+├── workflow.py           # LangGraph StateGraph 定义（inspect + 并行分支 + map/collect 节点）
 ├── grafana_client.py     # Grafana API 异步客户端（Dashboard / Alert / Metrics）
-├── llm_client.py         # GitHub Copilot LLM 客户端（Token 交换 + 分析）
+├── llm_client.py         # GitHub Copilot LLM 客户端（Token 交换 + chunk worker + JVM reduce 聚合）
 ├── report_generator.py   # 报告格式化（纯文本 / HTML 邮件 / Teams 卡片）
 ├── notifier.py           # 多渠道通知发送（Email + Teams）
 ├── config.py             # Pydantic 配置模型（YAML + 环境变量覆盖）
