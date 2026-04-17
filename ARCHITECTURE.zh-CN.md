@@ -42,48 +42,43 @@
 
 ---
 
-## 4. 运行流程图（Flowchart）
+## 4. StateGraph 状态图（与 workflow.py 对齐）
 
 ```mermaid
 flowchart TD
-    A[CLI 启动: main.cli] --> B[load_config + init_logger]
-    B --> C[validate_base_config / validate_copilot_access_token]
-    C --> D[LLM preflight]
-    D -->|成功| E[run_daily_langgraph]
-    D -->|失败| Z1[退出: return 1]
+    S([START]) --> I[inspect]
 
-    E --> F[inspect 节点: Grafana 采集]
+    I --> DKP[db_kafka_prepare]
+    I --> AS[alert_summary]
+    I --> JP[jvm_prepare]
 
-    F --> G1[db_kafka_prepare]
-    G1 --> G2{route_db_kafka_chunks}
-    G2 -->|有 chunks| G3[db_kafka_chunk_worker x N]
-    G3 --> G4[db_kafka_collect: 文本归并]
-    G2 -->|无 chunks| G4
-    G4 --> G5[dashboard_summary]
+    DKP --> RDK{route_db_kafka_chunks}
+    RDK -->|db_kafka_analysis 已存在 或 jobs 为空| DKC[db_kafka_collect]
+    RDK -->|jobs 非空| DKW[db_kafka_chunk_worker x N]
+    DKW --> DKC
+    DKC --> DS[dashboard_summary]
 
-    F --> H1[alert_summary]
+    JP --> RJ{route_jvm_chunks}
+    RJ -->|jvm_report 已存在 或 jobs 为空| JC[jvm_collect]
+    RJ -->|jobs 非空| JKW[jvm_chunk_worker x N]
+    JKW --> JC
 
-    F --> J1[jvm_prepare]
-    J1 --> J2{route_jvm_chunks}
-    J2 -->|有 chunks| J3[jvm_chunk_worker x N]
-    J3 --> J4[jvm_collect: LLM reduce 聚合]
-    J2 -->|无 chunks| J4
+    DS --> BR[build_report]
+    AS --> BR
+    JC --> BR
 
-    G5 --> I[build_report 节点: 构建日报与邮件内容]
-    H1 --> I
-    J4 --> I
-    I --> J[notify 节点: Email/Teams 发送]
-    J --> K[日志输出 + return 0]
+    BR --> N[notify]
+    N --> E([END])
 ```
 
 说明：
 
-  - DB/Kafka 与 JVM 两条分支都在图内执行 `prepare -> route -> worker -> collect`
-  - DB/Kafka 分支在 `db_kafka_collect` 节点执行确定性文本归并，不额外触发 LLM reduce 请求
-  - JVM 分支在 `jvm_collect` 节点执行 LLM reduce 聚合（去重、冲突消解、统一评级与建议）
-  - `dashboard_summary` 依赖 `db_kafka_collect`，`alert_summary` 独立并行
-  - `build_report` 需要等待 `dashboard_summary`、`alert_summary`、`jvm_collect`
-- `notify` 同时支持日报与 JVM 报告的二次发送
+- DB/Kafka 与 JVM 两条分支都在图内执行 `prepare -> route -> worker -> collect`。
+- DB/Kafka 分支在 `db_kafka_collect` 节点执行确定性文本归并，不额外触发 LLM reduce 请求。
+- JVM 分支在 `jvm_collect` 节点执行 LLM reduce 聚合（去重、冲突消解、统一评级与建议）。
+- `dashboard_summary` 依赖 `db_kafka_collect`，`alert_summary` 与 JVM 分支独立并行。
+- `build_report` 通过多前置节点汇合（`dashboard_summary` + `alert_summary` + `jvm_collect`）触发，避免任一分支先完成时的提前执行。
+- `notify` 同时支持日报与 JVM 报告的二次发送。
 
 ---
 

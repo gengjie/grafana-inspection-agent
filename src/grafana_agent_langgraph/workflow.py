@@ -196,9 +196,19 @@ class LangGraphDailyInspection:
         self.logger.info("Running node: build_report")
 
         inspection_time = state["dashboard_inspection"].get("inspection_time")
+        dashboard_summary = state.get("dashboard_summary") or (
+            "Dashboard summary not available."
+            if self.config.language == "en"
+            else "Dashboard 摘要不可用。"
+        )
+        alert_summary = state.get("alert_summary") or (
+            "Alert summary not available."
+            if self.config.language == "en"
+            else "告警摘要不可用。"
+        )
         daily_report = self.report_generator.format_daily_report(
-            dashboard_summary=state["dashboard_summary"],
-            alert_summary=state["alert_summary"],
+            dashboard_summary=dashboard_summary,
+            alert_summary=alert_summary,
             inspection_time=inspection_time,
             language=self.config.language,
         )
@@ -288,9 +298,7 @@ class LangGraphDailyInspection:
         graph.add_edge("jvm_chunk_worker", "jvm_collect")
 
         # build_report waits for all report ingredients
-        graph.add_edge("dashboard_summary", "build_report")
-        graph.add_edge("alert_summary", "build_report")
-        graph.add_edge("jvm_collect", "build_report")
+        graph.add_edge(["dashboard_summary", "alert_summary", "jvm_collect"], "build_report")
         graph.add_edge("build_report", "notify")
         graph.add_edge("notify", END)
         return graph.compile()
