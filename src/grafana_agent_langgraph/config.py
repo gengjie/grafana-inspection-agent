@@ -23,6 +23,12 @@ _ENV_OVERRIDES: list[tuple[str, list[str], Callable[[str], Any]]] = [
     ("COPILOT_USER_AGENT", ["llm", "user_agent"], str),
     ("LLM_TEMPERATURE", ["llm", "temperature"], float),
     ("LLM_MAX_TOKENS", ["llm", "max_tokens"], int),
+    ("LLM_JVM_MAX_PANELS", ["llm", "jvm_max_panels"], int),
+    (
+        "LLM_JVM_KEYWORDS",
+        ["llm", "jvm_keywords"],
+        lambda v: [kw.strip() for kw in v.split(",") if kw.strip()],
+    ),
     ("LOG_LEVEL", ["logging", "level"], str),
     ("SMTP_HOST", ["notification", "email", "smtp_host"], str),
     ("SMTP_PORT", ["notification", "email", "smtp_port"], int),
@@ -66,6 +72,21 @@ class LLMConfig(BaseModel):
     user_agent: str = Field(default="GitHubCopilotChat/0.26.7", description="HTTP User-Agent")
     temperature: float = Field(default=0.3, description="Temperature for generation")
     max_tokens: int = Field(default=2000, description="Maximum tokens for generation")
+    jvm_max_panels: int = Field(
+        default=100,
+        description="Maximum JVM-related panels to include in one run",
+    )
+    jvm_keywords: list[str] = Field(
+        default_factory=lambda: [
+            "jvm", "heap", "non-heap", "nonheap", "gc", "garbage",
+            "eden", "survivor", "old gen", "tenured", "metaspace",
+            "codecache", "code cache", "thread", "class loading",
+            "jvm_memory", "jvm_gc", "jvm_threads", "jvm_buffer",
+            "process_cpu", "hikari", "tomcat", "java_lang",
+            "direct_buffer", "mapped_buffer", "g1", "young gen",
+        ],
+        description="Keyword list for JVM panel matching",
+    )
 
     @field_validator("provider")
     @classmethod
@@ -75,6 +96,21 @@ class LLMConfig(BaseModel):
         if provider not in {"github_copilot", "copilot"}:
             raise ValueError("Only github_copilot provider is supported")
         return "github_copilot"
+
+    @field_validator("jvm_max_panels")
+    @classmethod
+    def validate_jvm_max_panels(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("jvm_max_panels must be > 0")
+        return v
+
+    @field_validator("jvm_keywords")
+    @classmethod
+    def validate_jvm_keywords(cls, v: list[str]) -> list[str]:
+        cleaned = [str(item).strip() for item in (v or []) if str(item).strip()]
+        if not cleaned:
+            raise ValueError("jvm_keywords cannot be empty")
+        return cleaned
 
 
 class EmailConfig(BaseModel):
@@ -244,6 +280,20 @@ class AppConfig(BaseSettings):
                 user_agent=os.getenv("COPILOT_USER_AGENT", "GitHubCopilotChat/0.26.7"),
                 temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
                 max_tokens=int(os.getenv("LLM_MAX_TOKENS", "2000")),
+                jvm_max_panels=int(os.getenv("LLM_JVM_MAX_PANELS", "100")),
+                jvm_keywords=[
+                    kw.strip()
+                    for kw in os.getenv("LLM_JVM_KEYWORDS", "").split(",")
+                    if kw.strip()
+                ]
+                or [
+                    "jvm", "heap", "non-heap", "nonheap", "gc", "garbage",
+                    "eden", "survivor", "old gen", "tenured", "metaspace",
+                    "codecache", "code cache", "thread", "class loading",
+                    "jvm_memory", "jvm_gc", "jvm_threads", "jvm_buffer",
+                    "process_cpu", "hikari", "tomcat", "java_lang",
+                    "direct_buffer", "mapped_buffer", "g1", "young gen",
+                ],
             ),
             notification=NotificationConfig(
                 email=EmailConfig(

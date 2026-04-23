@@ -87,6 +87,56 @@ $$
 4. 若任一门禁不达标，CLI 返回 `exit code 1`，job 失败。
 5. 上传 `/tmp/report-eval/` 作为 artifact，供人工审查。
 
+## 4.1 JVM 报告完整性增强（已落地）
+
+为降低 JVM 报告“不完整”问题，当前实现新增以下机制：
+
+1. JVM 筛选关键词可配置
+- 配置项：`llm.jvm_keywords`
+- 环境变量：`LLM_JVM_KEYWORDS`
+- 支持通过逗号分隔传入关键词列表。
+
+2. JVM 最大面板数可配置（默认 100）
+- 配置项：`llm.jvm_max_panels`
+- 环境变量：`LLM_JVM_MAX_PANELS`
+- 默认值：`100`
+
+3. JVM 检索范围包含 description
+- JVM 面板匹配从原先 `title + type + targets` 扩展为：
+  `title + description + type + targets`
+- 可减少依赖说明文本的面板漏检。
+
+4. 分片失败显式标注
+- 当某些 JVM chunk 子任务失败时，最终 JVM 报告会追加缺失分片提示。
+- 中文示例：`检测到分片子任务失败，最终报告存在缺失内容。缺失分片序号：2, 5。`
+- 英文示例：`Missing chunk outputs detected due to subagent failures. Missing chunk indexes: 2, 5.`
+
+### 配置示例
+
+```yaml
+llm:
+  jvm_max_panels: 100
+  jvm_keywords:
+    - "jvm"
+    - "heap"
+    - "gc"
+    - "metaspace"
+    - "thread"
+```
+
+### 环境变量示例
+
+```bash
+export LLM_JVM_MAX_PANELS=120
+export LLM_JVM_KEYWORDS="jvm,heap,gc,metaspace,thread,young gen,old gen"
+```
+
+### 排障建议
+
+1. 若 JVM 报告缺少某类服务：优先检查 `LLM_JVM_KEYWORDS` 是否覆盖该服务命名习惯。
+2. 若 JVM 报告覆盖不足：提高 `LLM_JVM_MAX_PANELS`。
+3. 若报告尾部出现缺失分片提示：检查对应 chunk 的 LLM 调用失败日志。
+
 ## 5. 本地运行示例
 
 ```bash

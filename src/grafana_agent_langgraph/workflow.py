@@ -101,6 +101,8 @@ class LangGraphDailyInspection:
             user_agent=config.llm.user_agent,
             temperature=config.llm.temperature,
             max_tokens=config.llm.max_tokens,
+            jvm_keywords=config.llm.jvm_keywords,
+            jvm_max_panels=config.llm.jvm_max_panels,
             language=config.language,
         )
         self.report_generator = ReportGenerator()

@@ -31,6 +31,7 @@ class LLMClient:
     """Client for LLM API interactions."""
 
     _TOKEN_REFRESH_BUFFER_SECONDS = 60
+    _CHUNK_FAILURE_PREFIX = "__CHUNK_FAILED__"
 
     async def _run_chunk_subagents(
         self,
@@ -227,17 +228,10 @@ class LLMClient:
         start_ts = lookback.get("start", "")
         end_ts = lookback.get("end", "")
 
-        jvm_keywords = [
-            "jvm", "heap", "non-heap", "nonheap", "gc", "garbage",
-            "eden", "survivor", "old gen", "tenured", "metaspace",
-            "codecache", "code cache", "thread", "class loading",
-            "jvm_memory", "jvm_gc", "jvm_threads", "jvm_buffer",
-            "process_cpu", "hikari", "tomcat", "java_lang",
-            "direct_buffer", "mapped_buffer", "g1", "young gen",
-        ]
+        jvm_keywords = [kw.lower() for kw in self.jvm_keywords]
 
         relevant: list[dict[str, Any]] = []
-        max_panels = 40
+        max_panels = self.jvm_max_panels
 
         for dash in dashboards:
             dash_title = dash.get("title", "Unknown")
@@ -246,25 +240,26 @@ class LLMClient:
                 if len(relevant) >= max_panels:
                     break
                 panel_title = panel.get("title", "Unknown") or "Unknown"
+                panel_description = str(panel.get("description") or "")
                 panel_type = panel.get("type", "") or ""
                 target_texts: list[str] = []
                 for t in panel.get("targets", []) or []:
                     target_texts.append(
                         str(t.get("expr") or t.get("query") or t.get("datasource") or "")
                     )
-                search_blob = " ".join([panel_title, panel_type] + target_texts).lower()
+                search_blob = " ".join([panel_title, panel_description, panel_type] + target_texts).lower()
                 if any(k in search_blob for k in jvm_keywords):
                     semantic_description = str(
                         panel.get("semantic_description")
-                        or self._build_panel_semantic_description(panel_title, panel.get("description"), panel_type, target_texts)
+                        or self._build_panel_semantic_description(panel_title, panel_description, panel_type, target_texts)
                     )
-                    service_key = self._extract_service_key(panel_title, panel.get("description"), target_texts)
+                    service_key = self._extract_service_key(panel_title, panel_description, target_texts)
                     relevant.append({
                         "dashboard": dash_title,
                         "dashboard_uid": dash_uid,
                         "panel_id": panel.get("id"),
                         "panel_title": panel_title,
-                        "panel_description": panel.get("description") or "",
+                        "panel_description": panel_description,
                         "panel_type": panel_type,
                         "targets": target_texts,
                         "service_key": service_key,
@@ -340,6 +335,7 @@ class LLMClient:
                     "prompt": template.replace("{panel_block}", panel_block),
                     "max_tokens": min(self.max_tokens, 4000),
                     "log_prompt": False,
+                    "return_failure_marker": True,
                 }
             )
 
@@ -415,6 +411,7 @@ class LLMClient:
         max_tokens = int(job.get("max_tokens") or self.max_tokens)
         log_prompt = bool(job.get("log_prompt", False))
         chunk_index = job.get("chunk_index")
+        return_failure_marker = bool(job.get("return_failure_marker", False))
 
         try:
             if log_prompt:
@@ -439,6 +436,8 @@ class LLMClient:
                 e,
                 exc_info=True,
             )
+            if return_failure_marker and chunk_index is not None:
+                return f"{self._CHUNK_FAILURE_PREFIX}:{chunk_index}"
             return ""
 
     async def generate_db_kafka_panel_analysis(self, inspection_data: dict[str, Any]) -> str:
@@ -464,6 +463,8 @@ class LLMClient:
         user_agent: str = "GitHubCopilotChat/0.26.7",
         temperature: float = 0.3,
         max_tokens: int = 20000,
+        jvm_keywords: list[str] | None = None,
+        jvm_max_panels: int = 100,
         language: str = "zh",
         request_timeout: int = 90,
     ):
@@ -479,6 +480,8 @@ class LLMClient:
             user_agent: User-Agent header
             temperature: Temperature for generation
             max_tokens: Maximum tokens for generation
+            jvm_keywords: JVM panel keyword list for filtering
+            jvm_max_panels: Maximum JVM panels to include in analysis
             language: Output language ('zh' for Chinese, 'en' for English)
             request_timeout: Timeout for HTTP requests in seconds
         """
@@ -492,6 +495,15 @@ class LLMClient:
         self.user_agent = user_agent
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.jvm_keywords = [str(kw).strip() for kw in (jvm_keywords or []) if str(kw).strip()] or [
+            "jvm", "heap", "non-heap", "nonheap", "gc", "garbage",
+            "eden", "survivor", "old gen", "tenured", "metaspace",
+            "codecache", "code cache", "thread", "class loading",
+            "jvm_memory", "jvm_gc", "jvm_threads", "jvm_buffer",
+            "process_cpu", "hikari", "tomcat", "java_lang",
+            "direct_buffer", "mapped_buffer", "g1", "young gen",
+        ]
+        self.jvm_max_panels = max(1, int(jvm_max_panels))
         self.language = language
         self.request_timeout = request_timeout
 
@@ -656,16 +668,33 @@ class LLMClient:
         inspection_data: dict[str, Any] | None = None,
     ) -> str:
         """Aggregate JVM chunk outputs into one final report (reduce stage)."""
-        valid_results = [r.strip() for r in chunk_results if isinstance(r, str) and r.strip()]
+        failed_chunks: list[int] = []
+        valid_results: list[str] = []
+        for item in chunk_results:
+            if not isinstance(item, str):
+                continue
+            text = item.strip()
+            if not text:
+                continue
+            if text.startswith(f"{self._CHUNK_FAILURE_PREFIX}:"):
+                _, _, raw_idx = text.partition(":")
+                try:
+                    failed_chunks.append(int(raw_idx))
+                except ValueError:
+                    pass
+                continue
+            valid_results.append(text)
+
         if not valid_results:
+            failed_note = self._format_failed_chunk_note(failed_chunks)
             return (
                 "Failed to generate JVM health report."
                 if self.language == "en"
                 else "JVM健康分析报告生成失败。"
-            )
+            ) + failed_note
 
         if len(valid_results) == 1:
-            return valid_results[0]
+            return valid_results[0] + self._format_failed_chunk_note(failed_chunks)
 
         lookback = (inspection_data or {}).get("lookback_period", {})
         start_ts = lookback.get("start", "")
@@ -710,16 +739,34 @@ class LLMClient:
             )
 
         try:
-            return await self._chat_completion(
+            merged = await self._chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=min(self.max_tokens, 4000),
+                max_tokens=min(self.max_tokens, 20000),
             )
+            return merged + self._format_failed_chunk_note(failed_chunks)
         except Exception as e:
             logger.error("Failed to reduce JVM chunk outputs: %s", e, exc_info=True)
-            return "\n\n".join(valid_results)
+            return "\n\n".join(valid_results) + self._format_failed_chunk_note(failed_chunks)
+
+    def _format_failed_chunk_note(self, failed_chunks: list[int]) -> str:
+        if not failed_chunks:
+            return ""
+        uniq = sorted(set(failed_chunks))
+        idx_text = ", ".join(str(i) for i in uniq)
+        if self.language == "en":
+            return (
+                "\n\n---\n"
+                "Missing chunk outputs detected due to subagent failures. "
+                f"Missing chunk indexes: {idx_text}."
+            )
+        return (
+            "\n\n---\n"
+            "检测到分片子任务失败，最终报告存在缺失内容。"
+            f"缺失分片序号：{idx_text}。"
+        )
 
     async def generate_dashboard_summary(
         self,
