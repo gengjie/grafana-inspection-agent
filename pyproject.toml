@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 grafana-agent-langgraph = "grafana_agent_langgraph.main:cli"
+grafana-agent-report-eval = "grafana_agent_langgraph.report_quality_eval:main"
 
 [build-system]
 requires = ["uv_build>=0.10.9,<0.11.0"]

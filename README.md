@@ -165,3 +165,26 @@ uv run ruff format src/
 uv run pytest
 ```
 
+## Report Quality Evaluation (Automated Gate)
+
+This project includes a minimal but production-viable automated quality evaluation flow for generated reports, designed for CI `test` stage gating:
+
+1. Runtime artifact export via `REPORT_EVAL_OUTPUT_DIR`.
+2. Deterministic scoring with `grafana-agent-report-eval` across structure, factual grounding, actionability, and uncertainty handling.
+3. Threshold-based exit code for pass/fail in CI.
+
+Local example:
+
+```bash
+export REPORT_EVAL_OUTPUT_DIR=/tmp/report-eval
+uv run grafana-agent-langgraph
+
+uv run grafana-agent-report-eval \
+  --report-file /tmp/report-eval/daily_report.txt \
+  --dashboard-inspection-file /tmp/report-eval/dashboard_inspection.json \
+  --alert-inspection-file /tmp/report-eval/alert_inspection.json \
+  --output-file /tmp/report-eval/eval-result.json
+```
+
+See detailed design: [docs/report-quality-evaluation.zh-CN.md](docs/report-quality-evaluation.zh-CN.md).
+

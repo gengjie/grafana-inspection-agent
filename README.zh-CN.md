@@ -164,3 +164,26 @@ uv run ruff format src/
 # 测试
 uv run pytest
 ```
+
+## 报告质量评估（自动化门禁）
+
+已提供最小可用的报告质量自动评估能力，可用于 CI `test` stage 质量门禁：
+
+1. 程序运行时可通过环境变量 `REPORT_EVAL_OUTPUT_DIR` 导出评估输入快照。
+2. 使用 `grafana-agent-report-eval` 对报告进行结构、事实锚定、可行动性、不确定性处理打分。
+3. 根据阈值返回退出码，直接作为 CI pass/fail 条件。
+
+本地示例：
+
+```bash
+export REPORT_EVAL_OUTPUT_DIR=/tmp/report-eval
+uv run grafana-agent-langgraph
+
+uv run grafana-agent-report-eval \
+  --report-file /tmp/report-eval/daily_report.txt \
+  --dashboard-inspection-file /tmp/report-eval/dashboard_inspection.json \
+  --alert-inspection-file /tmp/report-eval/alert_inspection.json \
+  --output-file /tmp/report-eval/eval-result.json
+```
+
+详细方案见 [docs/report-quality-evaluation.zh-CN.md](docs/report-quality-evaluation.zh-CN.md)。

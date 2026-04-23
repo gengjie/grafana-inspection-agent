@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import operator
+import os
+from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -13,6 +16,44 @@ from .grafana_client import GrafanaClient
 from .llm_client import LLMClient
 from .notifier import Notifier
 from .report_generator import ReportGenerator
+
+
+def _dump_report_eval_artifacts(result: dict[str, Any], logger) -> None:
+    """Dump report and inspection snapshots for automated quality evaluation."""
+    output_dir = os.getenv("REPORT_EVAL_OUTPUT_DIR", "").strip()
+    if not output_dir:
+        return
+
+    target = Path(output_dir)
+    target.mkdir(parents=True, exist_ok=True)
+
+    daily_report = str(result.get("daily_report") or "")
+    jvm_report = str(result.get("jvm_report") or "")
+    dashboard_inspection = result.get("dashboard_inspection") or {}
+    alert_inspection = result.get("alert_inspection") or {}
+
+    (target / "daily_report.txt").write_text(daily_report, encoding="utf-8")
+    (target / "jvm_report.txt").write_text(jvm_report, encoding="utf-8")
+    (target / "dashboard_inspection.json").write_text(
+        json.dumps(dashboard_inspection, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (target / "alert_inspection.json").write_text(
+        json.dumps(alert_inspection, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    meta = {
+        "inspection_time": (dashboard_inspection or {}).get("inspection_time"),
+        "dashboard_count": len((dashboard_inspection or {}).get("dashboards") or []),
+        "alert_history_count": len((alert_inspection or {}).get("alert_history") or []),
+        "active_alert_count": len((alert_inspection or {}).get("active_alerts") or []),
+    }
+    (target / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("Report evaluation artifacts dumped to %s", target)
 
 
 class InspectionState(TypedDict, total=False):
@@ -319,6 +360,8 @@ async def run_daily_langgraph(config: AppConfig, logger) -> int:
             "\n%s\nJVM Health Analysis Report\n%s\n%s\n%s",
             "=" * 80, "=" * 80, jvm_report, "=" * 80,
         )
+
+    _dump_report_eval_artifacts(result, logger)
 
     logger.info("Inspection completed successfully (LangGraph mode)")
     return 0
