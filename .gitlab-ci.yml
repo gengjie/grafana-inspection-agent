@@ -72,7 +72,7 @@ test:
   variables:
     APP_CONFIG_PATH: "/app/config/config.example.yaml"
     EMAIL_TO: "ngxd_gbs_nj@dsv.com,jie.geng@dsv.com"
-    REPORT_EVAL_OUTPUT_DIR: "/tmp/report-eval"
+    REPORT_EVAL_OUTPUT_DIR: "report-eval"
   script:
     - 'echo "SMTP_HOST: $SMTP_HOST"'
     - 'echo "SMTP_PORT: $SMTP_PORT"'
@@ -93,7 +93,7 @@ test:
   artifacts:
     when: always
     paths:
-      - /tmp/report-eval/
+      - report-eval/
     expire_in: 7 days
   rules:
     - if: '$CI_COMMIT_BRANCH == "main" && $DAILY_RUN == "false"'
