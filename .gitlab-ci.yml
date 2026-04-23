@@ -78,7 +78,7 @@ test:
     - 'echo "EMAIL_TO: $EMAIL_TO"'
     - grafana-agent-langgraph
   rules:
-    - if: '$DAILY_RUN == "false"'
+    - if: '$CI_COMMIT_BRANCH == "main" && $DAILY_RUN == "false"'
       when: manual
 
 stages:
