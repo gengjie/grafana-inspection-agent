@@ -1,6 +1,7 @@
 """Report generator module."""
 
 from datetime import datetime
+import re
 from typing import Any
 
 from dateutil.tz import tzutc
@@ -9,6 +10,41 @@ from markdown import markdown
 
 class ReportGenerator:
     """Generate formatted inspection reports."""
+
+    @staticmethod
+    def _sanitize_markdown_for_email(content: str, language: str = "zh", max_chars: int = 12000) -> str:
+        """Sanitize markdown into a renderer-friendly subset for downstream mail/html pipelines."""
+        text = (content or "").strip()
+        if not text:
+            return ""
+
+        # Drop fenced code block markers, keep plain text content.
+        text = text.replace("```markdown", "").replace("```md", "").replace("```", "")
+
+        # Convert markdown table rows to plain bullet lines to avoid broken rendering.
+        sanitized_lines: list[str] = []
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip()
+            if not line:
+                sanitized_lines.append("")
+                continue
+            if line.strip().startswith("|") and line.strip().endswith("|"):
+                cells = [c.strip() for c in line.strip("|").split("|")]
+                if cells and not all(re.fullmatch(r":?-+:?", c) for c in cells):
+                    sanitized_lines.append("- " + " | ".join(cells))
+                continue
+            sanitized_lines.append(line)
+
+        text = "\n".join(sanitized_lines)
+
+        # Remove raw HTML tags occasionally emitted by LLM.
+        text = re.sub(r"<[^>]+>", "", text)
+
+        if len(text) > max_chars:
+            suffix = "\n\n...(content truncated)" if language == "en" else "\n\n...(内容已截断)"
+            text = text[:max_chars] + suffix
+
+        return text.strip()
 
     @staticmethod
     def format_daily_report(
@@ -142,6 +178,11 @@ Grafana 巡检日报
 
         cleaned_lines = [ln for ln in cleaned_report.splitlines() if not _is_separator_line(ln)]
         cleaned_report = "\n".join(cleaned_lines).strip()
+        cleaned_report = ReportGenerator._sanitize_markdown_for_email(
+            cleaned_report,
+            language=language,
+            max_chars=14000,
+        )
 
         html_content = markdown(
             cleaned_report or ("No report content" if language == "en" else "暂无报告内容"),
@@ -276,6 +317,11 @@ Grafana 巡检日报
 
         cleaned_lines = [ln for ln in cleaned_report.splitlines() if not _is_separator_line(ln)]
         cleaned_report = "\n".join(cleaned_lines).strip()
+        cleaned_report = ReportGenerator._sanitize_markdown_for_email(
+            cleaned_report,
+            language=language,
+            max_chars=10000,
+        )
 
         html_content = markdown(
             cleaned_report or ("No JVM report content" if language == "en" else "暂无JVM报告内容"),

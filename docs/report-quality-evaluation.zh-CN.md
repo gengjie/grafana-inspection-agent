@@ -137,6 +137,25 @@ export LLM_JVM_KEYWORDS="jvm,heap,gc,metaspace,thread,young gen,old gen"
 2. 若 JVM 报告覆盖不足：提高 `LLM_JVM_MAX_PANELS`。
 3. 若报告尾部出现缺失分片提示：检查对应 chunk 的 LLM 调用失败日志。
 
+### 关于 reduce 超时是否正常
+
+当 JVM 分片较多、分片文本较长或 LLM 网络抖动时，reduce 阶段可能出现超时（`TimeoutError`）。
+
+当前行为属于可预期的降级路径：
+
+1. 程序不会整体失败。
+2. JVM 报告仍会生成（降级汇总版）。
+3. 若存在分片失败，会在报告尾部显式标注缺失分片序号。
+
+### 渲染兼容性增强（已落地）
+
+为减少后端 Markdown 渲染差异导致的排版混乱，邮件渲染前新增了内容清洗：
+
+1. 移除代码块围栏（```）。
+2. 将 Markdown 表格行转换为普通列表行。
+3. 清理 LLM 可能输出的原始 HTML 标签。
+4. 对超长内容截断并加尾注。
+
 ## 5. 本地运行示例
 
 ```bash

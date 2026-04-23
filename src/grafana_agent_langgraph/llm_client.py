@@ -702,6 +702,10 @@ class LLMClient:
         chunks_text = "\n\n".join(
             f"[Chunk {idx}]\n{content}" for idx, content in enumerate(valid_results, start=1)
         )
+        # Avoid oversize reduce prompts that increase timeout probability.
+        max_reduce_input_chars = 18000
+        if len(chunks_text) > max_reduce_input_chars:
+            chunks_text = chunks_text[:max_reduce_input_chars] + "\n\n...(truncated)"
 
         if self.language == "en":
             system_prompt = (
@@ -719,6 +723,7 @@ class LLMClient:
                 "3) Include severity labels and an overall health rating\n"
                 "4) Provide actionable tuning recommendations with concrete JVM flags\n"
                 "5) Output concise, formal English\n"
+                "6) Use only simple Markdown (headings + bullets), avoid tables and code blocks\n"
             )
         else:
             system_prompt = (
@@ -736,6 +741,7 @@ class LLMClient:
                 "3）给出严重程度标注与总体健康评级\n"
                 "4）提供可执行调优建议，包含具体JVM参数\n"
                 "5）使用正式、简洁中文输出\n"
+                "6）仅使用简单 Markdown（标题与列表），不要使用表格和代码块\n"
             )
 
         try:
@@ -744,12 +750,49 @@ class LLMClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=min(self.max_tokens, 20000),
+                max_tokens=min(self.max_tokens, 6000),
             )
             return merged + self._format_failed_chunk_note(failed_chunks)
         except Exception as e:
             logger.error("Failed to reduce JVM chunk outputs: %s", e, exc_info=True)
-            return "\n\n".join(valid_results) + self._format_failed_chunk_note(failed_chunks)
+            fallback = self._build_compact_jvm_fallback(valid_results)
+            return fallback + self._format_failed_chunk_note(failed_chunks)
+
+    def _build_compact_jvm_fallback(self, valid_results: list[str]) -> str:
+        """Build a compact deterministic fallback report when reduce LLM call fails."""
+        if self.language == "en":
+            title = "JVM Health Analysis (Fallback Summary)"
+            intro = "Reduce-stage timeout occurred. The following key points are aggregated from chunk results:"
+        else:
+            title = "JVM 健康分析（降级汇总）"
+            intro = "reduce 阶段调用超时，以下为基于分片结果的关键结论汇总："
+
+        bullets: list[str] = []
+        for chunk in valid_results:
+            for line in chunk.splitlines():
+                text = line.strip()
+                if not text:
+                    continue
+                if text.startswith("#"):
+                    continue
+                if text.startswith("- ") or text.startswith("* "):
+                    candidate = text[2:].strip()
+                else:
+                    candidate = text
+                if len(candidate) < 8:
+                    continue
+                bullets.append(candidate)
+                if len(bullets) >= 30:
+                    break
+            if len(bullets) >= 30:
+                break
+
+        if not bullets:
+            bullets = valid_results[:3]
+
+        lines = [f"# {title}", "", intro, ""]
+        lines.extend([f"- {item}" for item in bullets[:20]])
+        return "\n".join(lines)
 
     def _format_failed_chunk_note(self, failed_chunks: list[int]) -> str:
         if not failed_chunks:
