@@ -3,6 +3,7 @@
 import asyncio
 import time
 from typing import Any, Callable
+import re
 
 import ssl
 
@@ -19,6 +20,11 @@ def _no_verify_ssl() -> ssl.SSLContext:
     return ctx
 
 logger = get_logger("llm_client")
+
+_SERVICE_LABEL_PATTERNS = [
+    re.compile(r'(?:service|app|application|job|component|workload|k8s_app|pod|deployment|statefulset)=~?"([^"]+)"', re.IGNORECASE),
+    re.compile(r'(?:service|app|application|job|component|workload|k8s_app|pod|deployment|statefulset)\s*=\s*\'([^\']+)\'', re.IGNORECASE),
+]
 
 
 class LLMClient:
@@ -248,13 +254,21 @@ class LLMClient:
                     )
                 search_blob = " ".join([panel_title, panel_type] + target_texts).lower()
                 if any(k in search_blob for k in jvm_keywords):
+                    semantic_description = str(
+                        panel.get("semantic_description")
+                        or self._build_panel_semantic_description(panel_title, panel.get("description"), panel_type, target_texts)
+                    )
+                    service_key = self._extract_service_key(panel_title, panel.get("description"), target_texts)
                     relevant.append({
                         "dashboard": dash_title,
                         "dashboard_uid": dash_uid,
                         "panel_id": panel.get("id"),
                         "panel_title": panel_title,
+                        "panel_description": panel.get("description") or "",
                         "panel_type": panel_type,
                         "targets": target_texts,
+                        "service_key": service_key,
+                        "semantic_description": semantic_description,
                         "metrics": panel.get("metrics") or [],
                     })
 
@@ -267,12 +281,15 @@ class LLMClient:
             )
 
         lines: list[str] = []
-        for item in relevant:
+        for item in sorted(relevant, key=lambda x: (str(x.get("service_key") or ""), str(x.get("dashboard") or ""), str(x.get("panel_title") or ""))):
             tgt = "; ".join(item["targets"]) if item["targets"] else "(no targets)"
             metrics_summary = self._format_metrics_summary(item.get("metrics"))
+            service_key = item.get("service_key") or "unknown_service"
+            semantic_description = item.get("semantic_description") or ""
             lines.append(
                 f"- Dashboard: {item['dashboard']} (UID: {item['dashboard_uid']}) | "
                 f"Panel: {item['panel_title']} (ID: {item['panel_id']}, Type: {item['panel_type']}) | "
+                f"ServiceKey: {service_key} | Semantic: {semantic_description} | "
                 f"Targets: {tgt} | Metrics: {metrics_summary}"
             )
 
@@ -292,7 +309,8 @@ class LLMClient:
                 "1) Assess heap memory, GC behavior, thread health, metaspace, and class loading\n"
                 "2) Identify anomalies and provide severity ratings\n"
                 "3) Provide tuning recommendations with concrete JVM flags\n"
-                "4) Use formal, concise English\n"
+                "4) Aggregate findings by ServiceKey first, then summarize panel-level observations\n"
+                "5) Use formal, concise English\n"
             )
         else:
             system_prompt = (
@@ -306,9 +324,10 @@ class LLMClient:
                 "要求：\n"
                 "1）分维度评估：堆内存、GC行为、线程健康、Metaspace、类加载\n"
                 "2）识别异常指标，给出严重程度评级（🔴严重/🟡警告/🟢正常/⚪数据缺失）\n"
-                "3）给出综合健康评级表格\n"
-                "4）提供具体的JVM调优建议（含JVM参数）\n"
-                "5）使用正式、简洁的中文\n"
+                "3）优先按ServiceKey聚合同一服务的Panel，再做服务级结论\n"
+                "4）给出综合健康评级表格\n"
+                "5）提供具体的JVM调优建议（含JVM参数）\n"
+                "6）使用正式、简洁的中文\n"
             )
 
         jobs = []
@@ -325,6 +344,68 @@ class LLMClient:
             )
 
         return jobs, None
+
+    def _build_panel_semantic_description(
+        self,
+        panel_title: Any,
+        panel_description: Any,
+        panel_type: Any,
+        target_texts: list[str],
+    ) -> str:
+        parts: list[str] = []
+        title = str(panel_title or "").strip()
+        description = str(panel_description or "").strip()
+        p_type = str(panel_type or "").strip()
+
+        if title:
+            parts.append(f"title={title}")
+        if description:
+            parts.append(f"description={description}")
+        if p_type:
+            parts.append(f"type={p_type}")
+        if target_texts:
+            parts.append(f"targets={' | '.join(target_texts[:2])}")
+
+        return "; ".join(parts)
+
+    def _extract_service_key(
+        self,
+        panel_title: Any,
+        panel_description: Any,
+        target_texts: list[str],
+    ) -> str:
+        title = str(panel_title or "").strip()
+        description = str(panel_description or "").strip()
+
+        for raw in target_texts:
+            text = str(raw or "")
+            for pattern in _SERVICE_LABEL_PATTERNS:
+                match = pattern.search(text)
+                if match:
+                    candidate = self._normalize_service_key(match.group(1))
+                    if candidate:
+                        return candidate
+
+        for candidate in [description, title]:
+            extracted = self._normalize_service_key(candidate)
+            if extracted:
+                return extracted
+
+        return "unknown_service"
+
+    def _normalize_service_key(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        text = re.sub(r"\$\{[^}]+\}", "", text)
+        text = text.replace(".*", "")
+        text = re.sub(r"[^a-z0-9._\-]+", "-", text)
+        text = re.sub(r"-+", "-", text).strip("-._")
+        if not text:
+            return ""
+        if text in {"all", "unknown", "none"}:
+            return ""
+        return text
 
     async def run_chunk_job(self, job: dict[str, Any]) -> str:
         """Execute one chunk job as a subagent unit."""

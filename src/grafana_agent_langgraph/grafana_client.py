@@ -517,12 +517,15 @@ class GrafanaClient:
                     end_ms=int(now.timestamp() * 1000),
                     template_vars=template_vars,
                 )
+                panel_description = str(panel.get("description") or "")
                 logger.info(f"Panel Id: {panel.get('id')}, \t\t Metrics: {metrics}")
                 return {
                     "id": panel.get("id"),
                     "title": panel.get("title"),
+                    "description": panel_description,
                     "type": panel.get("type"),
                     "targets": panel.get("targets", []),
+                    "semantic_description": self._build_panel_semantic_description(panel),
                     "metrics": metrics,
                 }
 
@@ -620,4 +623,30 @@ class GrafanaClient:
             return str(val)
 
         return re.sub(r"\$\{?([A-Za-z0-9_\-]+)\}?", replace, expr)
+
+    def _build_panel_semantic_description(self, panel: dict[str, Any]) -> str:
+        """Build concise panel semantics to help service-level aggregation."""
+        title = str(panel.get("title") or "").strip()
+        description = str(panel.get("description") or "").strip()
+        panel_type = str(panel.get("type") or "").strip()
+
+        target_fragments: list[str] = []
+        for target in panel.get("targets", []) or []:
+            if not isinstance(target, dict):
+                continue
+            expr = target.get("expr") or target.get("query") or target.get("rawSql")
+            if expr:
+                target_fragments.append(str(expr).strip())
+
+        parts: list[str] = []
+        if title:
+            parts.append(f"title={title}")
+        if description:
+            parts.append(f"description={description}")
+        if panel_type:
+            parts.append(f"type={panel_type}")
+        if target_fragments:
+            parts.append(f"targets={' | '.join(target_fragments[:2])}")
+
+        return "; ".join(parts)
 
