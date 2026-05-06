@@ -52,7 +52,7 @@ daily-run:
   image: ${CI_REGISTRY_IMAGE}/${TOPIC}-${APPLICATION_NAME}:v1.7
   variables:
     APP_CONFIG_PATH: "/app/config/config.example.yaml"
-    EMAIL_TO: "ngxd_gbs_nj@dsv.com,jie.geng@dsv.com"
+    EMAIL_TO: "nGXD_GBS_Nanjing@dsv.com,jie.geng@dsv.com"
   script:
     - 'echo "SMTP_HOST: $SMTP_HOST"'
     - 'echo "SMTP_PORT: $SMTP_PORT"'
