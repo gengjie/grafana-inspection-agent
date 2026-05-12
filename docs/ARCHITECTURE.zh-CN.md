@@ -34,7 +34,9 @@
 | `runtime.py` | 配置加载、路径解析、基础校验、日志初始化 | `load_config()`, `validate_*()` |
 | `workflow.py` | 定义 LangGraph 状态图与节点逻辑 | `LangGraphDailyInspection`, `run_daily_langgraph()` |
 | `grafana_client.py` | Grafana API 访问、面板指标查询、告警聚合 | `inspect_dashboards()`, `inspect_alerts()` |
-| `llm_client.py` | Copilot token 交换、聊天补全、报告分析生成 | `preflight()`, `generate_*()` |
+| `llm_client.py` | Copilot token 交换、聊天补全、chunk 执行（传输层） | `preflight()`, `_chat_completion()`, `run_chunk_job()` |
+| `jvm_report.py` | JVM 专项领域分析（分片规划、重启原因约束、reduce 聚合） | `prepare_jvm_chunk_jobs()`, `reduce_jvm_chunk_results()` |
+| `daily_report.py` | 日报领域分析（Dashboard/Alert 总结与日报生成） | `generate_dashboard_summary()`, `generate_alert_summary()` |
 | `report_generator.py` | 报告格式化（文本/HTML/Teams） | `format_daily_report()`, `format_report_for_email()` |
 | `notifier.py` | 发送邮件与 Teams 通知 | `send_report()`, `send_email()`, `send_teams()` |
 | `config.py` | 配置模型定义、YAML + 环境变量覆盖 | `AppConfig`, `_ENV_OVERRIDES` |
@@ -91,7 +93,9 @@ flowchart LR
         R[runtime.py\nConfig & Validation]
         W[workflow.py\nLangGraph Orchestrator]
         GC[grafana_client.py\nGrafana Async Client]
-        LC[llm_client.py\nCopilot LLM Client]
+      LC[llm_client.py\nCopilot LLM Transport]
+      JS[jvm_report.py\nJVM Analysis]
+      DS[daily_report.py\nDaily Report]
         RG[report_generator.py\nReport Formatter]
         N[notifier.py\nEmail/Teams Sender]
         C[config.py\nPydantic Settings]
@@ -103,6 +107,8 @@ flowchart LR
     M --> W
     W --> GC
     W --> LC
+    W --> JS
+    W --> DS
     W --> RG
     W --> N
     M --> L
@@ -166,23 +172,23 @@ sequenceDiagram
       end
       WF->>WF: merge chunk texts (db_kafka_collect)
       WF->>WF: db_kafka_collect
-      WF->>LLM: generate_dashboard_summary(..., db_kafka_analysis)
+      WF->>DS: generate_dashboard_summary(..., db_kafka_analysis)
       LLM->>ExtC: /chat/completions
-      ExtC-->>LLM: dashboard summary
+      ExtC-->>DS: dashboard summary
     and
-      WF->>LLM: generate_alert_summary(...)
+      WF->>DS: generate_alert_summary(...)
       LLM->>ExtC: /chat/completions
-      ExtC-->>LLM: alert summary
+      ExtC-->>DS: alert summary
     and
-      WF->>LLM: prepare_jvm_chunk_jobs(...)
+      WF->>JS: prepare_jvm_chunk_jobs(...)
       loop map: each chunk
         WF->>LLM: run_chunk_job(jvm_chunk_i)
         LLM->>ExtC: /chat/completions
         ExtC-->>LLM: chunk result_i
       end
-      WF->>LLM: reduce_jvm_chunk_results(chunk_results)
+      WF->>JS: reduce_jvm_chunk_results(chunk_results)
       LLM->>ExtC: /chat/completions
-      ExtC-->>LLM: reduced jvm report
+      ExtC-->>JS: reduced jvm report
       WF->>WF: jvm_collect
     end
 

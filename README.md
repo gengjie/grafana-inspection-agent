@@ -8,6 +8,7 @@ An automated Grafana inspection system orchestrated by **LangGraph StateGraph**.
 - **Alert Monitoring** — Full analysis of alert rules, active alerts, and alert history
 - **DB/Kafka Panel Health Analysis** — Auto-filters database/Kafka panels, runs chunked map workers, then collect-merges chunk outputs as dashboard summary input
 - **JVM Health Report** — Filters JVM-related panels (Heap, GC, Thread, Metaspace, etc.), runs chunked map workers, and performs final reduce aggregation
+- **Restart Cause Guardrail** — JVM restart diagnosis strictly distinguishes OOM evidence vs K8s scheduling/eviction signals
 - **Multi-Channel Notification** — Email (aiosmtplib) + Microsoft Teams (Webhook)
 - **Multi-Language** — Chinese / English reports
 - **Long-Term Memory** — Local storage via mem0 for cross-day trend comparison
@@ -46,7 +47,9 @@ src/grafana_agent_langgraph/
 ├── main.py              # CLI entry point, preflight checks + workflow launch
 ├── workflow.py           # LangGraph StateGraph definition (inspect + parallel branches + map/collect nodes)
 ├── grafana_client.py     # Grafana API async client (Dashboard / Alert / Metrics)
-├── llm_client.py         # GitHub Copilot LLM client (token exchange + chunk worker + JVM reducer)
+├── llm_client.py         # GitHub Copilot LLM transport client (token exchange + chat completion + chunk worker)
+├── jvm_report.py # JVM analysis domain module (chunk planning + reduce aggregation)
+├── daily_report.py # Daily report domain module (dashboard/alert summaries + daily synthesis)
 ├── report_generator.py   # Report formatting (plain text / HTML email / Teams card)
 ├── notifier.py           # Multi-channel notification (Email + Teams)
 ├── config.py             # Pydantic config models (YAML + env var override)
@@ -170,7 +173,7 @@ uv run pytest
 This project includes a minimal but production-viable automated quality evaluation flow for generated reports, designed for CI `test` stage gating:
 
 1. Runtime artifact export via `REPORT_EVAL_OUTPUT_DIR`.
-2. Deterministic scoring with `grafana-agent-report-eval` across structure, factual grounding, actionability, and uncertainty handling.
+2. Deterministic scoring with `grafana-agent-report-eval` across structure, factual grounding, actionability, uncertainty handling, and restart-cause diagnosis (OOM vs scheduling).
 3. Threshold-based exit code for pass/fail in CI.
 
 Local example:

@@ -56,6 +56,46 @@ RISK_KEYWORDS = [
     "anomaly",
 ]
 
+OOM_REPORT_KEYWORDS = [
+    "oom",
+    "oomkilled",
+    "out of memory",
+    "内存溢出",
+    "oom重启",
+]
+
+SCHEDULING_REPORT_KEYWORDS = [
+    "调度",
+    "驱逐",
+    "evicted",
+    "failedscheduling",
+    "unschedulable",
+    "node drain",
+    "preempt",
+    "非oom",
+    "not oom",
+]
+
+OOM_SIGNAL_KEYWORDS = [
+    "oomkilled",
+    "outofmemory",
+    "out of memory",
+    "container_oom_events_total",
+    "reason=oomkilled",
+]
+
+SCHEDULING_SIGNAL_KEYWORDS = [
+    "failedscheduling",
+    "unschedulable",
+    "evicted",
+    "preempt",
+    "node drain",
+    "nodedrain",
+    "taint",
+    "node notready",
+    "reschedule",
+]
+
 UNCERTAINTY_KEYWORDS = [
     "数据缺失",
     "未知",
@@ -75,15 +115,17 @@ class ScoreBreakdown:
     factual_grounding: float
     actionability: float
     uncertainty_handling: float
+    restart_cause_diagnosis: float
 
     @property
     def total(self) -> float:
         # Weighted total for CI gate
         return round(
-            self.structure * 0.25
-            + self.factual_grounding * 0.45
-            + self.actionability * 0.20
-            + self.uncertainty_handling * 0.10,
+            self.structure * 0.20
+            + self.factual_grounding * 0.35
+            + self.actionability * 0.15
+            + self.uncertainty_handling * 0.10
+            + self.restart_cause_diagnosis * 0.20,
             2,
         )
 
@@ -269,6 +311,77 @@ def _score_uncertainty_handling(
     return round(score, 2), issues, details
 
 
+def _collect_restart_evidence_text(dashboard_inspection: dict[str, Any]) -> str:
+    fragments: list[str] = []
+    for dash in dashboard_inspection.get("dashboards", []) or []:
+        fragments.append(str(dash.get("title") or ""))
+        for panel in dash.get("panels", []) or []:
+            fragments.append(str(panel.get("title") or ""))
+            fragments.append(str(panel.get("description") or ""))
+            for target in panel.get("targets", []) or []:
+                if isinstance(target, dict):
+                    fragments.append(str(target.get("expr") or target.get("query") or ""))
+                else:
+                    fragments.append(str(target))
+            metrics = panel.get("metrics") or {}
+            if isinstance(metrics, dict):
+                for key in ("status", "reason", "error"):
+                    val = metrics.get(key)
+                    if val is not None:
+                        fragments.append(str(val))
+                for ser in metrics.get("series", []) or []:
+                    if not isinstance(ser, dict):
+                        continue
+                    fragments.append(str(ser.get("name") or ""))
+                    fragments.append(str(ser.get("refId") or ""))
+            elif isinstance(metrics, list):
+                for item in metrics:
+                    fragments.append(str(item))
+    return " ".join(fragments).lower()
+
+
+def _score_restart_cause_diagnosis(
+    report_text: str,
+    dashboard_inspection: dict[str, Any],
+) -> tuple[float, list[str], dict[str, Any]]:
+    issues: list[str] = []
+    report_lower = report_text.lower()
+    evidence_text = _collect_restart_evidence_text(dashboard_inspection)
+
+    report_mentions_oom = any(kw in report_lower for kw in OOM_REPORT_KEYWORDS)
+    report_mentions_scheduling = any(kw in report_lower for kw in SCHEDULING_REPORT_KEYWORDS)
+
+    has_oom_signal = any(kw in evidence_text for kw in OOM_SIGNAL_KEYWORDS)
+    has_scheduling_signal = any(kw in evidence_text for kw in SCHEDULING_SIGNAL_KEYWORDS)
+
+    score = 100.0
+    if report_mentions_oom and not has_oom_signal:
+        issues.append(
+            "Report attributes restart to OOM without explicit OOM evidence in source metrics"
+        )
+        score = 20.0 if has_scheduling_signal else 40.0
+
+    if report_mentions_oom and has_scheduling_signal and not report_mentions_scheduling:
+        issues.append(
+            "Report mentions OOM but misses scheduling/eviction signals that indicate non-OOM restart"
+        )
+        score = min(score, 35.0)
+
+    if has_scheduling_signal and not report_mentions_scheduling and not report_mentions_oom:
+        score = min(score, 75.0)
+        issues.append(
+            "Scheduling/eviction evidence exists but restart cause classification is missing"
+        )
+
+    details = {
+        "report_mentions_oom": report_mentions_oom,
+        "report_mentions_scheduling": report_mentions_scheduling,
+        "has_oom_signal": has_oom_signal,
+        "has_scheduling_signal": has_scheduling_signal,
+    }
+    return round(score, 2), issues, details
+
+
 def evaluate_report(
     report_text: str,
     dashboard_inspection: dict[str, Any],
@@ -287,12 +400,17 @@ def evaluate_report(
         report_text,
         dashboard_inspection,
     )
+    restart_score, restart_issues, restart_details = _score_restart_cause_diagnosis(
+        report_text,
+        dashboard_inspection,
+    )
 
     breakdown = ScoreBreakdown(
         structure=structure_score,
         factual_grounding=factual_score,
         actionability=action_score,
         uncertainty_handling=uncertainty_score,
+        restart_cause_diagnosis=restart_score,
     )
 
     issues = (
@@ -300,6 +418,7 @@ def evaluate_report(
         + factual_issues
         + action_issues
         + uncertainty_issues
+        + restart_issues
     )
 
     return {
@@ -310,11 +429,13 @@ def evaluate_report(
             "factual_grounding": factual_score,
             "actionability": action_score,
             "uncertainty_handling": uncertainty_score,
+            "restart_cause_diagnosis": restart_score,
         },
         "details": {
             "factual": factual_details,
             "actionability": action_details,
             "uncertainty": uncertainty_details,
+            "restart_cause_diagnosis": restart_details,
         },
         "issues": issues,
     }
@@ -344,6 +465,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-structure-score", type=float, default=85.0)
     parser.add_argument("--min-factual-score", type=float, default=75.0)
     parser.add_argument("--min-actionability-score", type=float, default=60.0)
+    parser.add_argument("--min-restart-cause-score", type=float, default=70.0)
     return parser.parse_args()
 
 
@@ -370,6 +492,7 @@ def main() -> int:
         "min_structure_score": args.min_structure_score,
         "min_factual_score": args.min_factual_score,
         "min_actionability_score": args.min_actionability_score,
+        "min_restart_cause_score": args.min_restart_cause_score,
     }
     scores = result["scores"]
 
@@ -382,6 +505,8 @@ def main() -> int:
         failed_gates.append("factual_grounding")
     if scores["actionability"] < gates["min_actionability_score"]:
         failed_gates.append("actionability")
+    if scores["restart_cause_diagnosis"] < gates["min_restart_cause_score"]:
+        failed_gates.append("restart_cause_diagnosis")
 
     result["gates"] = gates
     result["failed_gates"] = failed_gates

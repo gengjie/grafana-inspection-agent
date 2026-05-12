@@ -64,10 +64,16 @@
 - 统计源数据中缺失指标比例
 - 当缺失比例高时，要求报告出现不确定性表达
 
+5. 重启原因归因准确性（20%）
+- 识别报告是否将重启归因为 OOM
+- 在输入源数据中检索 OOM 明确信号（如 OOMKilled、container_oom_events_total）
+- 在输入源数据中检索调度/驱逐信号（如 FailedScheduling、Evicted、Unschedulable）
+- 若报告归因为 OOM 但缺少 OOM 证据，或忽略明确调度信号，则降分并输出 issue
+
 总分公式：
 
 $$
-S = 0.25 S_{structure} + 0.45 S_{factual} + 0.20 S_{action} + 0.10 S_{uncertainty}
+S = 0.20 S_{structure} + 0.35 S_{factual} + 0.15 S_{action} + 0.10 S_{uncertainty} + 0.20 S_{restart}
 $$
 
 默认门禁阈值：
@@ -76,6 +82,7 @@ $$
 2. `structure >= 85`
 3. `factual_grounding >= 75`
 4. `actionability >= 60`
+5. `restart_cause_diagnosis >= 70`
 
 ## 4. CI 执行流程
 

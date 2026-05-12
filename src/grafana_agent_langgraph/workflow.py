@@ -12,7 +12,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from .config import AppConfig
+from .daily_report import DailyReport
 from .grafana_client import GrafanaClient
+from .jvm_report import JVMReport
 from .llm_client import LLMClient
 from .notifier import Notifier
 from .report_generator import ReportGenerator
@@ -105,6 +107,20 @@ class LangGraphDailyInspection:
             jvm_max_panels=config.llm.jvm_max_panels,
             language=config.language,
         )
+        self.jvm_report = JVMReport(
+            language=config.language,
+            max_tokens=config.llm.max_tokens,
+            chat_completion=self.llm_client.chat_completion,
+            jvm_keywords=config.llm.jvm_keywords,
+            jvm_max_panels=config.llm.jvm_max_panels,
+            chunk_failure_prefix=LLMClient._CHUNK_FAILURE_PREFIX,
+        )
+        self.daily_report = DailyReport(
+            language=config.language,
+            max_tokens=config.llm.max_tokens,
+            model=config.llm.model,
+            chat_completion=self.llm_client.chat_completion,
+        )
         self.report_generator = ReportGenerator()
         self.notifier = Notifier(
             email_config=config.notification.email,
@@ -164,7 +180,7 @@ class LangGraphDailyInspection:
     async def dashboard_summary_node(self, state: InspectionState) -> InspectionState:
         """Generate dashboard summary, reusing DB/Kafka subagent analysis."""
         self.logger.info("Running node: dashboard_summary")
-        dashboard_summary = await self.llm_client.generate_dashboard_summary(
+        dashboard_summary = await self.daily_report.generate_dashboard_summary(
             state["dashboard_inspection"],
             db_kafka_analysis=state.get("db_kafka_analysis"),
         )
@@ -173,14 +189,16 @@ class LangGraphDailyInspection:
     async def alert_summary_node(self, state: InspectionState) -> InspectionState:
         """Generate alert summary through LLM."""
         self.logger.info("Running node: alert_summary")
-        alert_summary = await self.llm_client.generate_alert_summary(state["alert_inspection"])
+        alert_summary = await self.daily_report.generate_alert_summary(
+            state["alert_inspection"]
+        )
 
         return {"alert_summary": alert_summary}
 
     async def jvm_prepare_node(self, state: InspectionState) -> InspectionState:
         """Prepare JVM chunk jobs for graph-level map scheduling."""
         self.logger.info("Running node: jvm_prepare")
-        jobs, fallback_text = self.llm_client.prepare_jvm_chunk_jobs(
+        jobs, fallback_text = self.jvm_report.prepare_jvm_chunk_jobs(
             state["dashboard_inspection"]
         )
         if fallback_text is not None:
@@ -206,7 +224,7 @@ class LangGraphDailyInspection:
         if state.get("jvm_report"):
             return {"jvm_report": state["jvm_report"]}
 
-        merged = await self.llm_client.reduce_jvm_chunk_results(
+        merged = await self.jvm_report.reduce_jvm_chunk_results(
             state.get("jvm_chunk_results") or [],
             state.get("dashboard_inspection"),
         )

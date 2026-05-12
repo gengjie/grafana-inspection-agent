@@ -8,6 +8,7 @@
 - **告警监控** — 告警规则、活跃告警、历史告警全量分析
 - **DB/Kafka 面板健康分析** — 自动筛选数据库/Kafka 相关面板，分块并行 map 分析后在 collect 节点归并，作为 Dashboard 总结输入
 - **JVM 健康分析报告** — 筛选 JVM 相关面板（Heap、GC、Thread、Metaspace 等），分块并行分析后执行 reduce 聚合生成最终专项报告
+- **重启原因防误判约束** — JVM 诊断严格区分 OOM 明确信号与 K8s 调度/驱逐信号，避免把调度重启误判为内存问题
 - **多渠道通知** — Email（aiosmtplib）+ Microsoft Teams（Webhook）
 - **多语言** — 中文 / 英文报告
 - **长期记忆** — 基于 mem0 本地存储，支持跨天趋势对比
@@ -46,7 +47,9 @@ src/grafana_agent_langgraph/
 ├── main.py              # CLI 入口，预检查 + 启动工作流
 ├── workflow.py           # LangGraph StateGraph 定义（inspect + 并行分支 + map/collect 节点）
 ├── grafana_client.py     # Grafana API 异步客户端（Dashboard / Alert / Metrics）
-├── llm_client.py         # GitHub Copilot LLM 客户端（Token 交换 + chunk worker + JVM reduce 聚合）
+├── llm_client.py         # GitHub Copilot LLM 传输客户端（Token 交换 + chat completion + chunk worker）
+├── jvm_report.py # JVM 专项分析模块（分片规划 + reduce 聚合）
+├── daily_report.py # 日报分析模块（Dashboard/Alert 总结 + 日报合成）
 ├── report_generator.py   # 报告格式化（纯文本 / HTML 邮件 / Teams 卡片）
 ├── notifier.py           # 多渠道通知发送（Email + Teams）
 ├── config.py             # Pydantic 配置模型（YAML + 环境变量覆盖）
@@ -170,7 +173,7 @@ uv run pytest
 已提供最小可用的报告质量自动评估能力，可用于 CI `test` stage 质量门禁：
 
 1. 程序运行时可通过环境变量 `REPORT_EVAL_OUTPUT_DIR` 导出评估输入快照。
-2. 使用 `grafana-agent-report-eval` 对报告进行结构、事实锚定、可行动性、不确定性处理打分。
+2. 使用 `grafana-agent-report-eval` 对报告进行结构、事实锚定、可行动性、不确定性处理、重启原因归因准确性（OOM vs 调度）打分。
 3. 根据阈值返回退出码，直接作为 CI pass/fail 条件。
 
 本地示例：
