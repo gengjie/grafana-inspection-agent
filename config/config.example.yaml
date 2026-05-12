@@ -18,6 +18,10 @@ llm:
   user_agent: "GitHubCopilotChat/0.26.7"       # User-Agent header
   temperature: 0.1                     # Temperature for generation (0.0-1.0)
   max_tokens: 1000000                  # Maximum tokens for generation
+  request_timeout: 180                 # Copilot request timeout (seconds)
+  chunk_max_retries: 2                 # Retry count for chunk tasks on transient failures
+  chunk_retry_backoff_seconds: 1.0     # Initial retry backoff (seconds)
+  chunk_retry_max_backoff_seconds: 8.0 # Max retry backoff (seconds)
   jvm_max_panels: 100                  # Maximum JVM panels included for analysis
   jvm_keywords:                        # Configurable JVM panel matching keywords
     - "jvm"

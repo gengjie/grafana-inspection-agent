@@ -42,7 +42,10 @@ class LLMClient:
         jvm_keywords: list[str] | None = None,
         jvm_max_panels: int = 100,
         language: str = "zh",
-        request_timeout: int = 90,
+        request_timeout: int = 180,
+        chunk_max_retries: int = 2,
+        chunk_retry_backoff_seconds: float = 1.0,
+        chunk_retry_max_backoff_seconds: float = 8.0,
     ):
         """Initialize GitHub Copilot LLM client."""
         self.provider = "github_copilot"
@@ -60,6 +63,12 @@ class LLMClient:
         self.jvm_max_panels = max(1, int(jvm_max_panels))
         self.language = language
         self.request_timeout = request_timeout
+        self.chunk_max_retries = max(0, int(chunk_max_retries))
+        self.chunk_retry_backoff_seconds = max(0.1, float(chunk_retry_backoff_seconds))
+        self.chunk_retry_max_backoff_seconds = max(
+            self.chunk_retry_backoff_seconds,
+            float(chunk_retry_max_backoff_seconds),
+        )
 
         self._session_token = ""
         self._session_token_expires_at = 0.0
@@ -268,33 +277,74 @@ class LLMClient:
         log_prompt = bool(job.get("log_prompt", False))
         chunk_index = job.get("chunk_index")
         return_failure_marker = bool(job.get("return_failure_marker", False))
+        request_timeout = int(job.get("request_timeout") or self.request_timeout)
+        max_retries = int(job.get("max_retries", self.chunk_max_retries))
+        max_retries = max(0, max_retries)
+        retry_backoff_seconds = float(
+            job.get("retry_backoff_seconds", self.chunk_retry_backoff_seconds)
+        )
+        retry_backoff_seconds = max(0.1, retry_backoff_seconds)
+        retry_max_backoff_seconds = float(
+            job.get("retry_max_backoff_seconds", self.chunk_retry_max_backoff_seconds)
+        )
+        retry_max_backoff_seconds = max(retry_backoff_seconds, retry_max_backoff_seconds)
 
-        try:
-            if log_prompt:
-                logger.info(
-                    "%s subagent prompt (chunk=%s): %s",
-                    task_name,
-                    chunk_index,
-                    prompt,
-                )
-            return await self._chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
-            )
-        except Exception as e:
-            logger.error(
-                "%s subagent failed (chunk=%s): %s",
+        if log_prompt:
+            logger.info(
+                "%s subagent prompt (chunk=%s): %s",
                 task_name,
                 chunk_index,
-                e,
-                exc_info=True,
+                prompt,
             )
-            if return_failure_marker and chunk_index is not None:
-                return f"{self._CHUNK_FAILURE_PREFIX}:{chunk_index}"
-            return ""
+
+        total_attempts = max_retries + 1
+        for attempt in range(1, total_attempts + 1):
+            try:
+                return await self._chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=max_tokens,
+                    request_timeout=request_timeout,
+                )
+            except Exception as e:
+                is_retryable = self._is_retryable_chunk_error(e)
+                should_retry = is_retryable and attempt < total_attempts
+                if should_retry:
+                    sleep_seconds = min(
+                        retry_max_backoff_seconds,
+                        retry_backoff_seconds * (2 ** (attempt - 1)),
+                    )
+                    logger.warning(
+                        "%s subagent transient failure (chunk=%s, attempt=%s/%s), "
+                        "retry in %.1fs: %s",
+                        task_name,
+                        chunk_index,
+                        attempt,
+                        total_attempts,
+                        sleep_seconds,
+                        e,
+                    )
+                    await asyncio.sleep(sleep_seconds)
+                    continue
+
+                logger.error(
+                    "%s subagent failed (chunk=%s, attempt=%s/%s): %s",
+                    task_name,
+                    chunk_index,
+                    attempt,
+                    total_attempts,
+                    e,
+                    exc_info=True,
+                )
+                if return_failure_marker and chunk_index is not None:
+                    return f"{self._CHUNK_FAILURE_PREFIX}:{chunk_index}"
+                return ""
+
+        if return_failure_marker and chunk_index is not None:
+            return f"{self._CHUNK_FAILURE_PREFIX}:{chunk_index}"
+        return ""
 
     async def generate_db_kafka_panel_analysis(self, inspection_data: dict[str, Any]) -> str:
         """Generate DB/Kafka panel analysis text with chunk jobs."""
@@ -394,6 +444,7 @@ class LLMClient:
         messages: list[dict[str, str]],
         max_tokens: int | None = None,
         retry_on_auth_error: bool = True,
+        request_timeout: int | None = None,
     ) -> str:
         """Call Copilot chat completion endpoint with session token."""
         session_token = await self._get_session_token()
@@ -415,7 +466,8 @@ class LLMClient:
             "stream": False,
         }
 
-        timeout = aiohttp.ClientTimeout(total=self.request_timeout)
+        timeout_seconds = max(1, int(request_timeout if request_timeout is not None else self.request_timeout))
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         connector = aiohttp.TCPConnector(ssl=_no_verify_ssl())
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             async with session.post(url, headers=headers, json=payload) as response:
@@ -455,9 +507,35 @@ class LLMClient:
         self,
         messages: list[dict[str, str]],
         max_tokens: int | None = None,
+        request_timeout: int | None = None,
     ) -> str:
         """Public wrapper for chat completion used by domain services."""
-        return await self._chat_completion(messages=messages, max_tokens=max_tokens)
+        return await self._chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            request_timeout=request_timeout,
+        )
+
+    def _is_retryable_chunk_error(self, exc: Exception) -> bool:
+        """Return True for transient transport/rate-limit/server-side failures."""
+        if isinstance(exc, (asyncio.TimeoutError, aiohttp.ClientError)):
+            return True
+
+        text = str(exc).lower()
+        retryable_markers = [
+            "timeout",
+            "timed out",
+            "too many requests",
+            "rate limit",
+            "temporarily unavailable",
+            "connection reset",
+            "connection aborted",
+            "connection closed",
+            "502",
+            "503",
+            "504",
+        ]
+        return any(marker in text for marker in retryable_markers)
 
     def _format_metrics_summary(self, metrics: Any) -> str:
         """Return a concise metrics summary for prompt context."""

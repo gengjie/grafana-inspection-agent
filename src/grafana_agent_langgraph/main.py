@@ -29,6 +29,7 @@ async def _preflight_llm(config, logger) -> None:
         temperature=config.llm.temperature,
         max_tokens=config.llm.max_tokens,
         language=config.language,
+        request_timeout=config.llm.request_timeout,
     )
     await client.preflight()
 
@@ -59,7 +60,7 @@ async def main() -> int:
         logger.debug("LLM Provider: github_copilot, Model: %s", config.llm.model)
 
         return await run_daily_langgraph(config, logger)
-    except Exception as exc:  # noqa: broad-except
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Error during inspection (LangGraph mode): %s", exc)
         return 1
 

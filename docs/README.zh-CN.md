@@ -115,6 +115,10 @@ uv run grafana-agent-langgraph
 | `COPILOT_USER_AGENT` | `GitHubCopilotChat/0.26.7` | User-Agent 请求头 |
 | `LLM_TEMPERATURE` | `0.1` | 生成温度 |
 | `LLM_MAX_TOKENS` | `1000000` | 最大 Token 数 |
+| `LLM_REQUEST_TIMEOUT` | `180` | Copilot 请求超时（秒） |
+| `LLM_CHUNK_MAX_RETRIES` | `2` | 分片任务遇到瞬时错误时的重试次数 |
+| `LLM_CHUNK_RETRY_BACKOFF_SECONDS` | `1.0` | 分片重试初始退避时间（秒） |
+| `LLM_CHUNK_RETRY_MAX_BACKOFF_SECONDS` | `8.0` | 分片重试最大退避时间（秒） |
 
 #### 通知配置（敏感信息推荐环境变量注入）
 

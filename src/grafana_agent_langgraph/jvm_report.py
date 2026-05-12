@@ -208,7 +208,7 @@ class JVMReport:
                     "task_name": "jvm_report",
                     "system_prompt": system_prompt,
                     "prompt": template.replace("{panel_block}", panel_block),
-                    "max_tokens": min(self.max_tokens, 4000),
+                    "max_tokens": min(self.max_tokens, 2500),
                     "log_prompt": False,
                     "return_failure_marker": True,
                 }

@@ -23,6 +23,10 @@ _ENV_OVERRIDES: list[tuple[str, list[str], Callable[[str], Any]]] = [
     ("COPILOT_USER_AGENT", ["llm", "user_agent"], str),
     ("LLM_TEMPERATURE", ["llm", "temperature"], float),
     ("LLM_MAX_TOKENS", ["llm", "max_tokens"], int),
+    ("LLM_REQUEST_TIMEOUT", ["llm", "request_timeout"], int),
+    ("LLM_CHUNK_MAX_RETRIES", ["llm", "chunk_max_retries"], int),
+    ("LLM_CHUNK_RETRY_BACKOFF_SECONDS", ["llm", "chunk_retry_backoff_seconds"], float),
+    ("LLM_CHUNK_RETRY_MAX_BACKOFF_SECONDS", ["llm", "chunk_retry_max_backoff_seconds"], float),
     ("LLM_JVM_MAX_PANELS", ["llm", "jvm_max_panels"], int),
     (
         "LLM_JVM_KEYWORDS",
@@ -72,6 +76,19 @@ class LLMConfig(BaseModel):
     user_agent: str = Field(default="GitHubCopilotChat/0.26.7", description="HTTP User-Agent")
     temperature: float = Field(default=0.3, description="Temperature for generation")
     max_tokens: int = Field(default=2000, description="Maximum tokens for generation")
+    request_timeout: int = Field(default=180, description="Copilot request timeout in seconds")
+    chunk_max_retries: int = Field(
+        default=2,
+        description="Retry times for chunk tasks when transient errors occur",
+    )
+    chunk_retry_backoff_seconds: float = Field(
+        default=1.0,
+        description="Base backoff seconds between chunk retries",
+    )
+    chunk_retry_max_backoff_seconds: float = Field(
+        default=8.0,
+        description="Maximum backoff seconds between chunk retries",
+    )
     jvm_max_panels: int = Field(
         default=100,
         description="Maximum JVM-related panels to include in one run",
@@ -102,6 +119,27 @@ class LLMConfig(BaseModel):
     def validate_jvm_max_panels(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("jvm_max_panels must be > 0")
+        return v
+
+    @field_validator("request_timeout")
+    @classmethod
+    def validate_request_timeout(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("request_timeout must be > 0")
+        return v
+
+    @field_validator("chunk_max_retries")
+    @classmethod
+    def validate_chunk_max_retries(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("chunk_max_retries must be >= 0")
+        return v
+
+    @field_validator("chunk_retry_backoff_seconds", "chunk_retry_max_backoff_seconds")
+    @classmethod
+    def validate_chunk_retry_backoff(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("chunk retry backoff must be > 0")
         return v
 
     @field_validator("jvm_keywords")
@@ -280,6 +318,14 @@ class AppConfig(BaseSettings):
                 user_agent=os.getenv("COPILOT_USER_AGENT", "GitHubCopilotChat/0.26.7"),
                 temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
                 max_tokens=int(os.getenv("LLM_MAX_TOKENS", "2000")),
+                request_timeout=int(os.getenv("LLM_REQUEST_TIMEOUT", "180")),
+                chunk_max_retries=int(os.getenv("LLM_CHUNK_MAX_RETRIES", "2")),
+                chunk_retry_backoff_seconds=float(
+                    os.getenv("LLM_CHUNK_RETRY_BACKOFF_SECONDS", "1.0")
+                ),
+                chunk_retry_max_backoff_seconds=float(
+                    os.getenv("LLM_CHUNK_RETRY_MAX_BACKOFF_SECONDS", "8.0")
+                ),
                 jvm_max_panels=int(os.getenv("LLM_JVM_MAX_PANELS", "100")),
                 jvm_keywords=[
                     kw.strip()

@@ -115,6 +115,10 @@ Config files are resolved in the following order (highest to lowest priority):
 | `COPILOT_USER_AGENT` | `GitHubCopilotChat/0.26.7` | User-Agent header |
 | `LLM_TEMPERATURE` | `0.1` | Generation temperature |
 | `LLM_MAX_TOKENS` | `1000000` | Maximum token count |
+| `LLM_REQUEST_TIMEOUT` | `180` | Copilot request timeout in seconds |
+| `LLM_CHUNK_MAX_RETRIES` | `2` | Retry count for chunk tasks on transient errors |
+| `LLM_CHUNK_RETRY_BACKOFF_SECONDS` | `1.0` | Initial backoff seconds between chunk retries |
+| `LLM_CHUNK_RETRY_MAX_BACKOFF_SECONDS` | `8.0` | Maximum backoff seconds between chunk retries |
 
 #### Notification (sensitive fields recommended via env vars)
 

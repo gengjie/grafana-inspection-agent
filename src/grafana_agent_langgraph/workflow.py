@@ -106,6 +106,10 @@ class LangGraphDailyInspection:
             jvm_keywords=config.llm.jvm_keywords,
             jvm_max_panels=config.llm.jvm_max_panels,
             language=config.language,
+            request_timeout=config.llm.request_timeout,
+            chunk_max_retries=config.llm.chunk_max_retries,
+            chunk_retry_backoff_seconds=config.llm.chunk_retry_backoff_seconds,
+            chunk_retry_max_backoff_seconds=config.llm.chunk_retry_max_backoff_seconds,
         )
         self.jvm_report = JVMReport(
             language=config.language,
