@@ -177,6 +177,11 @@ class JVMReport:
                 "4) Provide tuning recommendations with concrete JVM flags\\n"
                 "5) Aggregate findings by ServiceKey first, then summarize panel-level observations\\n"
                 "6) Use formal, concise English\\n"
+                "7) Must use exactly these top-level sections:\\n"
+                "   I. Service Dimension Assessment\\n"
+                "   II. Restart Cause Diagnosis\\n"
+                "   III. Overall Health Rating\\n"
+                "   IV. Actionable Tuning Recommendations\\n"
             )
         else:
             system_prompt = (
@@ -198,6 +203,11 @@ class JVMReport:
                 "5）给出综合健康评级\\n"
                 "6）提供具体的JVM调优建议（含JVM参数）\\n"
                 "7）使用正式、简洁的中文\\n"
+                "8）必须严格使用以下一级标题：\\n"
+                "   一、各服务分维度评估\\n"
+                "   二、重启原因诊断\\n"
+                "   三、总体健康评级\\n"
+                "   四、可执行调优建议\\n"
             )
 
         jobs = []
@@ -280,6 +290,11 @@ class JVMReport:
                 "5) Provide actionable tuning recommendations with concrete JVM flags\\n"
                 "6) Output concise, formal English\\n"
                 "7) Use only simple Markdown (headings + bullets), avoid tables and code blocks\\n"
+                "8) Must use exactly these top-level sections:\\n"
+                "   I. Service Dimension Assessment\\n"
+                "   II. Restart Cause Diagnosis\\n"
+                "   III. Overall Health Rating\\n"
+                "   IV. Actionable Tuning Recommendations\\n"
             )
         else:
             system_prompt = (
@@ -302,6 +317,11 @@ class JVMReport:
                 "5）提供可执行调优建议，包含具体JVM参数\\n"
                 "6）使用正式、简洁中文输出\\n"
                 "7）仅使用简单 Markdown（标题与列表），不要使用表格和代码块\\n"
+                "8）必须严格使用以下一级标题：\\n"
+                "   一、各服务分维度评估\\n"
+                "   二、重启原因诊断\\n"
+                "   三、总体健康评级\\n"
+                "   四、可执行调优建议\\n"
             )
 
         try:
