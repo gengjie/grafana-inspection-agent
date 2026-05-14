@@ -12,7 +12,25 @@ class ReportGenerator:
     """Generate formatted inspection reports."""
 
     @staticmethod
-    def _sanitize_markdown_for_email(content: str, language: str = "zh", max_chars: int = 12000) -> str:
+    def _strip_yaml_front_matter(text: str) -> str:
+        """Strip YAML front matter only when it is strictly present at file start."""
+        content = (text or "").strip()
+        if not content.startswith("---\n"):
+            return content
+
+        lines = content.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return content
+
+        # Require a dedicated closing delimiter line for valid front matter.
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                return "\n".join(lines[i + 1 :]).strip()
+
+        return content
+
+    @staticmethod
+    def _sanitize_markdown_for_email(content: str, language: str = "zh", max_chars: int | None = 12000) -> str:
         """Sanitize markdown into a renderer-friendly subset for downstream mail/html pipelines."""
         text = (content or "").strip()
         if not text:
@@ -40,9 +58,17 @@ class ReportGenerator:
         # Remove raw HTML tags occasionally emitted by LLM.
         text = re.sub(r"<[^>]+>", "", text)
 
-        if len(text) > max_chars:
+        if max_chars is not None and len(text) > max_chars:
             suffix = "\n\n...(content truncated)" if language == "en" else "\n\n...(内容已截断)"
-            text = text[:max_chars] + suffix
+            # Prefer truncating at paragraph boundary to avoid dropping half sections.
+            body = text[:max_chars]
+            paragraph_break = body.rfind("\n\n")
+            line_break = body.rfind("\n")
+            if paragraph_break >= int(max_chars * 0.6):
+                body = body[:paragraph_break]
+            elif line_break >= int(max_chars * 0.6):
+                body = body[:line_break]
+            text = body.rstrip() + suffix
 
         return text.strip()
 
@@ -163,11 +189,7 @@ Grafana 巡检日报
             subject = f"Grafana巡检日报 - {inspection_date}"
 
         # Remove optional YAML front matter and cross-line separators for a cleaner email
-        cleaned_report = report.strip() if report else ""
-        if cleaned_report.startswith("---"):
-            parts = cleaned_report.split("---", 2)
-            if len(parts) == 3:
-                cleaned_report = parts[2].strip()
+        cleaned_report = ReportGenerator._strip_yaml_front_matter(report)
 
         # Strip long separator lines made of repeated characters (e.g., '─', '=', '-')
         def _is_separator_line(line: str) -> bool:
@@ -181,7 +203,7 @@ Grafana 巡检日报
         cleaned_report = ReportGenerator._sanitize_markdown_for_email(
             cleaned_report,
             language=language,
-            max_chars=14000,
+            max_chars=None,
         )
 
         html_content = markdown(
@@ -303,11 +325,7 @@ Grafana 巡检日报
             gen_time = inspection_time or datetime.now(tzutc()).strftime("%Y-%m-%d %H:%M:%S UTC")
             footer = "本报告由Grafana Inspection Agent自动生成"
 
-        cleaned_report = jvm_report.strip() if jvm_report else ""
-        if cleaned_report.startswith("---"):
-            parts = cleaned_report.split("---", 2)
-            if len(parts) == 3:
-                cleaned_report = parts[2].strip()
+        cleaned_report = ReportGenerator._strip_yaml_front_matter(jvm_report)
 
         def _is_separator_line(line: str) -> bool:
             l = line.strip()
@@ -320,7 +338,7 @@ Grafana 巡检日报
         cleaned_report = ReportGenerator._sanitize_markdown_for_email(
             cleaned_report,
             language=language,
-            max_chars=10000,
+            max_chars=None,
         )
 
         html_content = markdown(
