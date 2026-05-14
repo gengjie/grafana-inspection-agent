@@ -59,9 +59,6 @@ Requirements:
 4. Output in English
 5. Clear format with appropriate paragraph separation
 6. Integrate the DB/Kafka panel health analysis into the summary
-7. Must use exactly these top-level sections:
-    I. Overall Health Status
-    II. Key Risks and Anomalies
 
 Please generate the Dashboard inspection summary:"""
             system_prompt = "You are a professional DevOps engineer, skilled in analyzing and summarizing monitoring system status."
@@ -87,9 +84,6 @@ Dashboard列表：
 4. 使用中文输出
 5. 格式清晰，使用适当的段落分隔
 6. 将数据库/Kafka面板健康分析融合进总结
-7. 必须严格使用以下一级标题：
-    一、总体健康状况
-    二、关键风险与异常
 
 请生成Dashboard巡检总结："""
             system_prompt = "你是一位专业的运维工程师，擅长分析和总结监控系统的运行状态。"
@@ -134,8 +128,6 @@ Requirements:
 4. Organize content by importance or chronological order
 5. Output in English
 6. Clear format with appropriate paragraphs and lists
-7. Must use exactly this top-level section title:
-    III. Alert Rule Runtime Status
 
 Please generate the detailed alert inspection report:"""
             system_prompt = "You are a professional DevOps engineer, skilled in analyzing and summarizing alert system status, able to describe alert triggers and impacts in detail."
@@ -163,8 +155,6 @@ Please generate the detailed alert inspection report:"""
 4. 按重要性或时间顺序组织内容
 5. 使用中文输出
 6. 格式清晰，使用适当的段落和列表
-7. 必须严格使用以下一级标题：
-    三、告警规则运行状态
 
 请生成告警巡检详细报告："""
             system_prompt = "你是一位专业的运维工程师，擅长分析和总结告警系统的运行状态，能够详细描述告警的触发原因和影响。"
