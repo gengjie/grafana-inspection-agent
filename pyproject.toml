@@ -1,7 +1,7 @@
 [project]
 name = "grafana-agent-langgraph"
-version = "1.8.0"
-author = "Geng Jie, 耿杰, 个人开发者"
+version = "2.0.1"
+authors = "Geng Jie, 耿杰, 个人开发者"
 description = "Grafana inspection agent refactored with LangGraph StateGraph"
 readme = "README.md"
 requires-python = ">=3.12"
