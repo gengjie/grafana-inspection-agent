@@ -22,16 +22,30 @@ class ReportGenerator:
         if not lines or lines[0].strip() != "---":
             return content
 
-        # Require a dedicated closing delimiter line for valid front matter.
+        # Require a dedicated closing delimiter line and at least one YAML key-value
+        # line, so we do not treat markdown horizontal rules as front matter.
+        front_matter_lines: list[str] = []
         for i in range(1, len(lines)):
             if lines[i].strip() == "---":
-                return "\n".join(lines[i + 1 :]).strip()
+                has_yaml_kv = any(
+                    re.match(r"^[A-Za-z0-9_\-]+\s*:\s*.*$", ln.strip())
+                    for ln in front_matter_lines
+                    if ln.strip() and not ln.strip().startswith("#")
+                )
+                if has_yaml_kv:
+                    return "\n".join(lines[i + 1 :]).strip()
+                return content
+            front_matter_lines.append(lines[i])
 
         return content
 
     @staticmethod
-    def _sanitize_markdown_for_email(content: str, language: str = "zh", max_chars: int | None = 12000) -> str:
-        """Sanitize markdown into a renderer-friendly subset for downstream mail/html pipelines."""
+    def _sanitize_markdown_for_email(content: str, language: str = "zh", max_chars: int | None = None) -> str:
+        """Sanitize markdown into a renderer-friendly subset for downstream mail/html pipelines.
+
+        By default this function does not truncate content, so markdown structure
+        (sections/headings) is preserved unless caller explicitly provides a limit.
+        """
         text = (content or "").strip()
         if not text:
             return ""
@@ -58,7 +72,7 @@ class ReportGenerator:
         # Remove raw HTML tags occasionally emitted by LLM.
         text = re.sub(r"<[^>]+>", "", text)
 
-        if max_chars is not None and len(text) > max_chars:
+        if max_chars is not None and max_chars > 0 and len(text) > max_chars:
             suffix = "\n\n...(content truncated)" if language == "en" else "\n\n...(内容已截断)"
             # Prefer truncating at paragraph boundary to avoid dropping half sections.
             body = text[:max_chars]
