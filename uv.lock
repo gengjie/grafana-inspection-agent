@@ -353,7 +353,7 @@ wheels = [
 
 [[package]]
 name = "grafana-agent-langgraph"
-version = "0.1.0"
+version = "2.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
