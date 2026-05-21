@@ -69,8 +69,9 @@ class ReportGenerator:
 
         text = "\n".join(sanitized_lines)
 
-        # Remove raw HTML tags occasionally emitted by LLM.
-        text = re.sub(r"<[^>]+>", "", text)
+        # Remove raw HTML tags occasionally emitted by LLM, but keep
+        # comparator expressions like "< 15 ms" or "> 500" in prose.
+        text = re.sub(r"</?[A-Za-z][^>]*>", "", text)
 
         if max_chars is not None and max_chars > 0 and len(text) > max_chars:
             suffix = "\n\n...(content truncated)" if language == "en" else "\n\n...(内容已截断)"
