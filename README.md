@@ -139,10 +139,31 @@ Config files are resolved in the following order (highest to lowest priority):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GRAFANA_TIMEOUT` | `30` | Grafana request timeout (seconds) |
+| `GRAFANA_VERIFY_SSL` | `false` | Whether to verify Grafana TLS certificates |
+| `GRAFANA_CA_FILE` | _empty_ | Optional custom CA bundle path for Grafana TLS verification |
 | `LOG_LEVEL` | `INFO` | Log level |
 | `TIMEZONE` | `UTC` | Timezone |
 | `LOOKBACK_HOURS` | `24` | Inspection lookback period (hours) |
 | `LANGUAGE` | `zh` | Report language (`zh` / `en`) |
+
+### TLS Certificate Troubleshooting
+
+If runtime fails with `SSLCertVerificationError: certificate verify failed: unable to get local issuer certificate`, your Grafana endpoint likely uses an internal CA chain that is not trusted by the runtime.
+
+Recommended fix (secure):
+
+```bash
+export GRAFANA_CA_FILE=/path/to/internal-ca-bundle.pem
+export GRAFANA_VERIFY_SSL=true
+```
+
+Temporary workaround (not recommended for production):
+
+```bash
+export GRAFANA_VERIFY_SSL=false
+```
+
+You can also set these keys in `config/config.yaml` under `grafana`.
 
 ## Dependencies
 

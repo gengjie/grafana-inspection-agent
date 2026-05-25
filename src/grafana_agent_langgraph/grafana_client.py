@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 import math
 import re
+import ssl
 
 import aiohttp
 from dateutil import parser as date_parser
@@ -19,17 +20,29 @@ logger = get_logger("grafana_client")
 class GrafanaClient:
     """Async client for Grafana API."""
 
-    def __init__(self, url: str, api_key: str, timeout: int = 300):
+    def __init__(
+        self,
+        url: str,
+        api_key: str,
+        timeout: int = 300,
+        verify_ssl: bool = False,
+        ca_file: str | None = None,
+    ):
         """Initialize Grafana client.
 
         Args:
             url: Grafana instance URL
             api_key: Grafana API key
             timeout: Request timeout in seconds
+            verify_ssl: Whether to verify TLS certificates
+            ca_file: Custom CA bundle path for TLS certificate verification
         """
         self.url = url.rstrip("/")
         self.api_key = api_key
         self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.verify_ssl = verify_ssl
+        self.ca_file = ca_file
+        self.ssl_context: ssl.SSLContext | bool = self._build_ssl_context()
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -38,6 +51,24 @@ class GrafanaClient:
         # limit concurrent metric queries to avoid overload
         self._metrics_semaphore = asyncio.Semaphore(5)
         self._ds_cache: dict[str, dict[str, Any]] = {}
+
+    def _build_ssl_context(self) -> ssl.SSLContext | bool:
+        """Create SSL context for Grafana HTTPS requests."""
+        if not self.verify_ssl:
+            logger.warning(
+                "Grafana TLS certificate verification is disabled (verify_ssl=false). "
+                "Use only for temporary troubleshooting."
+            )
+            return False
+
+        if self.ca_file:
+            try:
+                return ssl.create_default_context(cafile=self.ca_file)
+            except Exception as e:
+                logger.error("Invalid Grafana CA file %s: %s", self.ca_file, e)
+                raise
+
+        return ssl.create_default_context()
 
     async def _request(
         self, method: str, endpoint: str, **kwargs: Any
@@ -59,7 +90,13 @@ class GrafanaClient:
         logger.debug(f"Making {method} request to {url}")
         try:
             async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                async with session.request(method, url, headers=self.headers, **kwargs) as response:
+                async with session.request(
+                    method,
+                    url,
+                    headers=self.headers,
+                    ssl=self.ssl_context,
+                    **kwargs,
+                ) as response:
                     response.raise_for_status()
                     data = await response.json()
                     logger.debug(f"Request successful: {method} {endpoint}")

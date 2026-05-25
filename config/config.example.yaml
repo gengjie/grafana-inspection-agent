@@ -5,6 +5,8 @@ grafana:
   url: "https://grafana.example.com"  # Grafana instance URL
   api_key: "your-grafana-api-key"     # Grafana API key (Service Account token)
   timeout: 30                          # Request timeout in seconds
+  verify_ssl: false                    # Verify Grafana TLS certificate
+  ca_file: null                        # Optional custom CA bundle path for internal/self-signed certs
 
 # LLM Configuration
 llm:

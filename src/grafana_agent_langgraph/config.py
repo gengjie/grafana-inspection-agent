@@ -13,6 +13,8 @@ _ENV_OVERRIDES: list[tuple[str, list[str], Callable[[str], Any]]] = [
     ("GRAFANA_URL", ["grafana", "url"], str),
     ("GRAFANA_API_KEY", ["grafana", "api_key"], str),
     ("GRAFANA_TIMEOUT", ["grafana", "timeout"], int),
+    ("GRAFANA_VERIFY_SSL", ["grafana", "verify_ssl"], lambda v: v.lower() == "true"),
+    ("GRAFANA_CA_FILE", ["grafana", "ca_file"], str),
     ("LLM_PROVIDER", ["llm", "provider"], str),
     ("COPILOT_ACCESS_TOKEN", ["llm", "access_token"], str),
     ("LLM_MODEL", ["llm", "model"], str),
@@ -55,6 +57,21 @@ class GrafanaConfig(BaseModel):
     url: str = Field(..., description="Grafana instance URL")
     api_key: str = Field(..., description="Grafana API key")
     timeout: int = Field(default=30, description="Request timeout in seconds")
+    verify_ssl: bool = Field(default=False, description="Whether to verify TLS certificates")
+    ca_file: Optional[str] = Field(
+        default=None,
+        description="Custom CA bundle path used to verify Grafana TLS certificate",
+    )
+
+    @field_validator("ca_file")
+    @classmethod
+    def normalize_ca_file(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        value = v.strip()
+        if not value:
+            return None
+        return str(Path(value).expanduser())
 
 
 class LLMConfig(BaseModel):
@@ -303,6 +320,8 @@ class AppConfig(BaseSettings):
                 url=os.getenv("GRAFANA_URL", ""),
                 api_key=os.getenv("GRAFANA_API_KEY", ""),
                 timeout=int(os.getenv("GRAFANA_TIMEOUT", "30")),
+                verify_ssl=os.getenv("GRAFANA_VERIFY_SSL", "false").lower() == "true",
+                ca_file=os.getenv("GRAFANA_CA_FILE") or None,
             ),
             llm=LLMConfig(
                 provider=os.getenv("LLM_PROVIDER", "github_copilot"),

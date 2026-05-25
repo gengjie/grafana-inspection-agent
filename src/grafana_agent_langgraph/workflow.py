@@ -92,6 +92,8 @@ class LangGraphDailyInspection:
             url=config.grafana.url,
             api_key=config.grafana.api_key,
             timeout=config.grafana.timeout,
+            verify_ssl=config.grafana.verify_ssl,
+            ca_file=config.grafana.ca_file,
         )
         self.llm_client = LLMClient(
             access_token=config.llm.access_token,
