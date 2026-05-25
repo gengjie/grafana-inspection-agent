@@ -49,7 +49,7 @@ include:
 
 daily-run:
   stage: daily-run
-  image: ${CI_REGISTRY_IMAGE}/${TOPIC}-${APPLICATION_NAME}:v2.0.2
+  image: ${CI_REGISTRY_IMAGE}/${TOPIC}-${APPLICATION_NAME}:v2.0.3
   variables:
     APP_CONFIG_PATH: "/app/config/config.example.yaml"
     EMAIL_TO: "nGXD_GBS_Nanjing@dsv.com,jie.geng@dsv.com"
