@@ -7,6 +7,7 @@
 - **Dashboard 自动巡检** — 并行采集所有面板指标数据，LLM 生成摘要
 - **告警监控** — 告警规则、活跃告警、历史告警全量分析
 - **DB/Kafka 面板健康分析** — 自动筛选数据库/Kafka 相关面板，分块并行 map 分析后在 collect 节点归并，作为 Dashboard 总结输入
+- **慢查询 SQL 专项诊断** — 针对配置的数据库 Dashboard UID 列表生成独立慢查询诊断报告
 - **JVM 健康分析报告** — 筛选 JVM 相关面板（Heap、GC、Thread、Metaspace 等），分块并行分析后执行 reduce 聚合生成最终专项报告
 - **重启原因防误判约束** — JVM 诊断严格区分 OOM 明确信号与 K8s 调度/驱逐信号，避免把调度重启误判为内存问题
 - **多渠道通知** — Email（aiosmtplib）+ Microsoft Teams（Webhook）
@@ -28,12 +29,14 @@ START
   │
   ├──────────► [alert_summary]
   │
+  ├──────────► [slow_query_summary]
+  │
   └──────────► [jvm_prepare] ─► [route_jvm_chunks]
                                      ├─(有 chunks)─► [jvm_chunk_worker x N] ─► [jvm_collect (LLM reduce 聚合)]
                                      └─(无 chunks)───────────────────────────► [jvm_collect]
 
-[dashboard_summary] + [alert_summary] + [jvm_collect]
-                      └──────────────────────────────► [build_report] ─► [notify] ─► END
+[dashboard_summary] + [alert_summary] + [slow_query_summary] + [jvm_collect]
+                                            └──────────────────────────────► [build_report] ─► [notify] ─► END
 ```
 
 说明：
@@ -50,6 +53,7 @@ src/grafana_agent_langgraph/
 ├── llm_client.py         # GitHub Copilot LLM 传输客户端（Token 交换 + chat completion + chunk worker）
 ├── jvm_report.py # JVM 专项分析模块（分片规划 + reduce 聚合）
 ├── daily_report.py # 日报分析模块（Dashboard/Alert 总结 + 日报合成）
+├── slow_query_report.py # 慢查询专项分析模块（目标看板选择 + SQL 诊断生成）
 ├── report_generator.py   # 报告格式化（纯文本 / HTML 邮件 / Teams 卡片）
 ├── notifier.py           # 多渠道通知发送（Email + Teams）
 ├── config.py             # Pydantic 配置模型（YAML + 环境变量覆盖）
@@ -139,6 +143,10 @@ uv run grafana-agent-langgraph
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `GRAFANA_TIMEOUT` | `30` | Grafana 请求超时（秒） |
+| `GRAFANA_VERIFY_SSL` | `false` | 是否校验 Grafana TLS 证书 |
+| `GRAFANA_CA_FILE` | _空_ | Grafana TLS 校验使用的自定义 CA 文件 |
+| `GRAFANA_SLOW_QUERY_DASHBOARD_UIDS` | `aawp84s` | 慢查询专项诊断目标 Dashboard UID 列表（逗号分隔） |
+| `GRAFANA_SLOW_QUERY_DASHBOARD_UID` | `aawp84s` | 兼容旧版的单 UID 配置（已废弃，建议迁移） |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
 | `TIMEZONE` | `UTC` | 时区 |
 | `LOOKBACK_HOURS` | `24` | 巡检回溯时间（小时） |

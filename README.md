@@ -7,6 +7,7 @@ An automated Grafana inspection system orchestrated by **LangGraph StateGraph**.
 - **Dashboard Auto-Inspection** — Parallel metric collection across all panels with LLM-generated summaries
 - **Alert Monitoring** — Full analysis of alert rules, active alerts, and alert history
 - **DB/Kafka Panel Health Analysis** — Auto-filters database/Kafka panels, runs chunked map workers, then collect-merges chunk outputs as dashboard summary input
+- **Slow Query SQL Diagnosis** — Generates a dedicated slow-query diagnostic report focused on configured database dashboard UID list (`GRAFANA_SLOW_QUERY_DASHBOARD_UIDS`)
 - **JVM Health Report** — Filters JVM-related panels (Heap, GC, Thread, Metaspace, etc.), runs chunked map workers, and performs final reduce aggregation
 - **Restart Cause Guardrail** — JVM restart diagnosis strictly distinguishes OOM evidence vs K8s scheduling/eviction signals
 - **Multi-Channel Notification** — Email (aiosmtplib) + Microsoft Teams (Webhook)
@@ -28,12 +29,14 @@ START
   │
   ├──────────► [alert_summary]
   │
+  ├──────────► [slow_query_summary]
+  │
   └──────────► [jvm_prepare] ─► [route_jvm_chunks]
                                      ├─(chunks)─► [jvm_chunk_worker x N] ─► [jvm_collect (LLM reduce)]
                                      └─(no chunks)────────────────────────► [jvm_collect]
 
-[dashboard_summary] + [alert_summary] + [jvm_collect]
-                      └──────────────────────────────► [build_report] ─► [notify] ─► END
+[dashboard_summary] + [alert_summary] + [slow_query_summary] + [jvm_collect]
+                                            └──────────────────────────────► [build_report] ─► [notify] ─► END
 ```
 
 Notes:
@@ -50,6 +53,7 @@ src/grafana_agent_langgraph/
 ├── llm_client.py         # GitHub Copilot LLM transport client (token exchange + chat completion + chunk worker)
 ├── jvm_report.py # JVM analysis domain module (chunk planning + reduce aggregation)
 ├── daily_report.py # Daily report domain module (dashboard/alert summaries + daily synthesis)
+├── slow_query_report.py # Slow-query diagnosis domain module (dashboard selection + SQL diagnosis synthesis)
 ├── report_generator.py   # Report formatting (plain text / HTML email / Teams card)
 ├── notifier.py           # Multi-channel notification (Email + Teams)
 ├── config.py             # Pydantic config models (YAML + env var override)
@@ -141,6 +145,8 @@ Config files are resolved in the following order (highest to lowest priority):
 | `GRAFANA_TIMEOUT` | `30` | Grafana request timeout (seconds) |
 | `GRAFANA_VERIFY_SSL` | `false` | Whether to verify Grafana TLS certificates |
 | `GRAFANA_CA_FILE` | _empty_ | Optional custom CA bundle path for Grafana TLS verification |
+| `GRAFANA_SLOW_QUERY_DASHBOARD_UIDS` | `aawp84s` | Dedicated dashboard UID list for slow-query SQL diagnosis (comma-separated) |
+| `GRAFANA_SLOW_QUERY_DASHBOARD_UID` | `aawp84s` | Backward-compatible single UID setting (deprecated) |
 | `LOG_LEVEL` | `INFO` | Log level |
 | `TIMEZONE` | `UTC` | Timezone |
 | `LOOKBACK_HOURS` | `24` | Inspection lookback period (hours) |

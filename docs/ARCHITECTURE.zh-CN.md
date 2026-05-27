@@ -37,6 +37,7 @@
 | `llm_client.py` | Copilot token 交换、聊天补全、chunk 执行（传输层） | `preflight()`, `_chat_completion()`, `run_chunk_job()` |
 | `jvm_report.py` | JVM 专项领域分析（分片规划、重启原因约束、reduce 聚合） | `prepare_jvm_chunk_jobs()`, `reduce_jvm_chunk_results()` |
 | `daily_report.py` | 日报领域分析（Dashboard/Alert 总结与日报生成） | `generate_dashboard_summary()`, `generate_alert_summary()` |
+| `slow_query_report.py` | 慢查询专项分析（多 UID 目标看板选择与 SQL 诊断） | `generate_slow_query_sql_summary()` |
 | `report_generator.py` | 报告格式化（文本/HTML/Teams） | `format_daily_report()`, `format_report_for_email()` |
 | `notifier.py` | 发送邮件与 Teams 通知 | `send_report()`, `send_email()`, `send_teams()` |
 | `config.py` | 配置模型定义、YAML + 环境变量覆盖 | `AppConfig`, `_ENV_OVERRIDES` |
@@ -52,6 +53,7 @@ flowchart TD
 
     I --> DKP[db_kafka_prepare]
     I --> AS[alert_summary]
+    I --> SQS[slow_query_summary]
     I --> JP[jvm_prepare]
 
     DKP --> RDK{route_db_kafka_chunks}
@@ -67,6 +69,7 @@ flowchart TD
 
     DS --> BR[build_report]
     AS --> BR
+    SQS --> BR
     JC --> BR
 
     BR --> N[notify]
@@ -79,8 +82,8 @@ flowchart TD
 - DB/Kafka 分支在 `db_kafka_collect` 节点执行确定性文本归并，不额外触发 LLM reduce 请求。
 - JVM 分支在 `jvm_collect` 节点执行 LLM reduce 聚合（去重、冲突消解、统一评级与建议）。
 - `dashboard_summary` 依赖 `db_kafka_collect`，`alert_summary` 与 JVM 分支独立并行。
-- `build_report` 通过多前置节点汇合（`dashboard_summary` + `alert_summary` + `jvm_collect`）触发，避免任一分支先完成时的提前执行。
-- `notify` 同时支持日报与 JVM 报告的二次发送。
+- `build_report` 通过多前置节点汇合（`dashboard_summary` + `alert_summary` + `slow_query_summary` + `jvm_collect`）触发，避免任一分支先完成时的提前执行。
+- `notify` 同时支持日报、JVM 报告与慢查询报告的独立发送。
 
 ---
 
@@ -96,6 +99,7 @@ flowchart LR
       LC[llm_client.py\nCopilot LLM Transport]
       JS[jvm_report.py\nJVM Analysis]
       DS[daily_report.py\nDaily Report]
+      SQR[slow_query_report.py\nSlow Query Report]
         RG[report_generator.py\nReport Formatter]
         N[notifier.py\nEmail/Teams Sender]
         C[config.py\nPydantic Settings]
@@ -109,6 +113,7 @@ flowchart LR
     W --> LC
     W --> JS
     W --> DS
+    W --> SQR
     W --> RG
     W --> N
     M --> L
@@ -180,6 +185,10 @@ sequenceDiagram
       LLM->>ExtC: /chat/completions
       ExtC-->>DS: alert summary
     and
+      WF->>SQR: generate_slow_query_sql_summary(...)
+      LLM->>ExtC: /chat/completions
+      ExtC-->>SQR: slow-query summary
+    and
       WF->>JS: prepare_jvm_chunk_jobs(...)
       loop map: each chunk
         WF->>LLM: run_chunk_job(jvm_chunk_i)
@@ -206,6 +215,12 @@ sequenceDiagram
         WF->>N: send_report(jvm)
         N->>SMTP: send_email(jvm)
         N->>Teams: send_teams(jvm payload)
+    end
+
+    opt slow_query_report 非空
+      WF->>N: send_report(slow_query)
+      N->>SMTP: send_email(slow_query)
+      N->>Teams: send_teams(slow_query payload)
     end
 
     WF-->>CLI: return 0
@@ -249,7 +264,8 @@ sequenceDiagram
   - DB/Kafka：`db_kafka_chunk_jobs`, `db_kafka_chunk_job`, `db_kafka_chunk_results`, `db_kafka_analysis`
   - JVM：`jvm_chunk_jobs`, `jvm_chunk_job`, `jvm_chunk_results`, `jvm_report`
 - LLM结果：`dashboard_summary`, `alert_summary`
-- 报告结果：`daily_report`, `email_subject`, `email_html`, `jvm_email_subject`, `jvm_email_html`
+- LLM结果：`dashboard_summary`, `alert_summary`, `slow_query_summary`
+- 报告结果：`daily_report`, `email_subject`, `email_html`, `jvm_email_subject`, `jvm_email_html`, `slow_query_email_subject`, `slow_query_email_html`
 - 发送结果：`notify_results`
 
 数据流可抽象为：

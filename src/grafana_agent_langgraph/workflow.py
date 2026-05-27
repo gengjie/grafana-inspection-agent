@@ -18,6 +18,7 @@ from .jvm_report import JVMReport
 from .llm_client import LLMClient
 from .notifier import Notifier
 from .report_generator import ReportGenerator
+from .slow_query_report import SlowQueryReport
 
 
 def _dump_report_eval_artifacts(result: dict[str, Any], logger) -> None:
@@ -73,12 +74,15 @@ class InspectionState(TypedDict, total=False):
     jvm_chunk_results: Annotated[list[str], operator.add]
     dashboard_summary: str
     alert_summary: str
+    slow_query_summary: str
     jvm_report: str
     daily_report: str
     email_subject: str
     email_html: str
     jvm_email_subject: str
     jvm_email_html: str
+    slow_query_email_subject: str
+    slow_query_email_html: str
     notify_results: dict[str, bool]
 
 
@@ -126,6 +130,12 @@ class LangGraphDailyInspection:
             max_tokens=config.llm.max_tokens,
             model=config.llm.model,
             chat_completion=self.llm_client.chat_completion,
+        )
+        self.slow_query_report = SlowQueryReport(
+            language=config.language,
+            max_tokens=config.llm.max_tokens,
+            chat_completion=self.llm_client.chat_completion,
+            slow_query_dashboard_uids=config.grafana.slow_query_dashboard_uids,
         )
         self.report_generator = ReportGenerator()
         self.notifier = Notifier(
@@ -201,6 +211,15 @@ class LangGraphDailyInspection:
 
         return {"alert_summary": alert_summary}
 
+    async def slow_query_summary_node(self, state: InspectionState) -> InspectionState:
+        """Generate slow-query SQL diagnosis report for dedicated DB dashboard."""
+        self.logger.info("Running node: slow_query_summary")
+        slow_query_summary = await self.slow_query_report.generate_slow_query_sql_summary(
+            state["dashboard_inspection"],
+            grafana_base_url=self.config.grafana.url,
+        )
+        return {"slow_query_summary": slow_query_summary}
+
     async def jvm_prepare_node(self, state: InspectionState) -> InspectionState:
         """Prepare JVM chunk jobs for graph-level map scheduling."""
         self.logger.info("Running node: jvm_prepare")
@@ -273,9 +292,15 @@ class LangGraphDailyInspection:
             if self.config.language == "en"
             else "告警摘要不可用。"
         )
+        slow_query_summary = state.get("slow_query_summary") or (
+            "Slow-query SQL summary not available."
+            if self.config.language == "en"
+            else "慢查询 SQL 诊断摘要不可用。"
+        )
         daily_report = self.report_generator.format_daily_report(
             dashboard_summary=dashboard_summary,
             alert_summary=alert_summary,
+            slow_query_summary=slow_query_summary,
             inspection_time=inspection_time,
             language=self.config.language,
         )
@@ -292,12 +317,22 @@ class LangGraphDailyInspection:
             language=self.config.language,
         )
 
+        # Build slow-query report email content
+        slow_query_report = state.get("slow_query_summary", "")
+        slow_query_email_subject, slow_query_email_html = self.report_generator.format_slow_query_report_for_email(
+            slow_query_report=slow_query_report,
+            inspection_time=inspection_time,
+            language=self.config.language,
+        )
+
         return {
             "daily_report": daily_report,
             "email_subject": email_subject,
             "email_html": email_html,
             "jvm_email_subject": jvm_email_subject,
             "jvm_email_html": jvm_email_html,
+            "slow_query_email_subject": slow_query_email_subject,
+            "slow_query_email_html": slow_query_email_html,
         }
 
     async def notify_node(self, state: InspectionState) -> InspectionState:
@@ -329,6 +364,20 @@ class LangGraphDailyInspection:
                 )
                 notify_results["jvm_email"] = jvm_results.get("email", False)
                 notify_results["jvm_teams"] = jvm_results.get("teams", False)
+
+            slow_query_report = state.get("slow_query_summary", "")
+            if slow_query_report:
+                slow_query_results = await self.notifier.send_report(
+                    report=slow_query_report,
+                    dashboard_summary=slow_query_report,
+                    alert_summary="",
+                    email_subject=state.get("slow_query_email_subject", ""),
+                    email_html=state.get("slow_query_email_html", ""),
+                    grafana_url=self.config.grafana.url,
+                    language=self.config.language,
+                )
+                notify_results["slow_query_email"] = slow_query_results.get("email", False)
+                notify_results["slow_query_teams"] = slow_query_results.get("teams", False)
         else:
             notify_results = {"email": False, "teams": False}
             self.logger.info("No notification channel enabled, skip notify")
@@ -344,6 +393,7 @@ class LangGraphDailyInspection:
         graph.add_node("db_kafka_collect", self.db_kafka_collect_node)
         graph.add_node("dashboard_summary", self.dashboard_summary_node)
         graph.add_node("alert_summary", self.alert_summary_node)
+        graph.add_node("slow_query_summary", self.slow_query_summary_node)
         graph.add_node("jvm_prepare", self.jvm_prepare_node)
         graph.add_node("jvm_chunk_worker", self.jvm_chunk_worker_node)
         graph.add_node("jvm_collect", self.jvm_collect_node)
@@ -354,6 +404,7 @@ class LangGraphDailyInspection:
         # After inspect, run branch analyses in parallel
         graph.add_edge("inspect", "db_kafka_prepare")
         graph.add_edge("inspect", "alert_summary")
+        graph.add_edge("inspect", "slow_query_summary")
         graph.add_edge("inspect", "jvm_prepare")
 
         graph.add_conditional_edges("db_kafka_prepare", self.route_db_kafka_chunks)
@@ -365,7 +416,7 @@ class LangGraphDailyInspection:
         graph.add_edge("jvm_chunk_worker", "jvm_collect")
 
         # build_report waits for all report ingredients
-        graph.add_edge(["dashboard_summary", "alert_summary", "jvm_collect"], "build_report")
+        graph.add_edge(["dashboard_summary", "alert_summary", "slow_query_summary", "jvm_collect"], "build_report")
         graph.add_edge("build_report", "notify")
         graph.add_edge("notify", END)
         return graph.compile()

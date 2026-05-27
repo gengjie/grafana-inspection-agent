@@ -15,6 +15,16 @@ _ENV_OVERRIDES: list[tuple[str, list[str], Callable[[str], Any]]] = [
     ("GRAFANA_TIMEOUT", ["grafana", "timeout"], int),
     ("GRAFANA_VERIFY_SSL", ["grafana", "verify_ssl"], lambda v: v.lower() == "true"),
     ("GRAFANA_CA_FILE", ["grafana", "ca_file"], str),
+    (
+        "GRAFANA_SLOW_QUERY_DASHBOARD_UIDS",
+        ["grafana", "slow_query_dashboard_uids"],
+        lambda v: [uid.strip() for uid in v.split(",") if uid.strip()],
+    ),
+    (
+        "GRAFANA_SLOW_QUERY_DASHBOARD_UID",
+        ["grafana", "slow_query_dashboard_uids"],
+        lambda v: [v.strip()] if v.strip() else [],
+    ),
     ("LLM_PROVIDER", ["llm", "provider"], str),
     ("COPILOT_ACCESS_TOKEN", ["llm", "access_token"], str),
     ("LLM_MODEL", ["llm", "model"], str),
@@ -62,6 +72,10 @@ class GrafanaConfig(BaseModel):
         default=None,
         description="Custom CA bundle path used to verify Grafana TLS certificate",
     )
+    slow_query_dashboard_uids: list[str] = Field(
+        default_factory=lambda: ["aawp84s"],
+        description="Dashboard UIDs used for dedicated slow-query SQL diagnosis",
+    )
 
     @field_validator("ca_file")
     @classmethod
@@ -72,6 +86,20 @@ class GrafanaConfig(BaseModel):
         if not value:
             return None
         return str(Path(value).expanduser())
+
+    @field_validator("slow_query_dashboard_uids", mode="before")
+    @classmethod
+    def validate_slow_query_dashboard_uids(cls, v: Any) -> list[str]:
+        if isinstance(v, str):
+            v = [item.strip() for item in v.split(",") if item.strip()]
+
+        if not isinstance(v, list):
+            raise ValueError("slow_query_dashboard_uids must be a list")
+
+        cleaned = [str(item).strip() for item in v if str(item).strip()]
+        if not cleaned:
+            raise ValueError("slow_query_dashboard_uids cannot be empty")
+        return cleaned
 
 
 class LLMConfig(BaseModel):
@@ -322,6 +350,14 @@ class AppConfig(BaseSettings):
                 timeout=int(os.getenv("GRAFANA_TIMEOUT", "30")),
                 verify_ssl=os.getenv("GRAFANA_VERIFY_SSL", "false").lower() == "true",
                 ca_file=os.getenv("GRAFANA_CA_FILE") or None,
+                slow_query_dashboard_uids=[
+                    uid.strip()
+                    for uid in os.getenv(
+                        "GRAFANA_SLOW_QUERY_DASHBOARD_UIDS",
+                        os.getenv("GRAFANA_SLOW_QUERY_DASHBOARD_UID", "aawp84s"),
+                    ).split(",")
+                    if uid.strip()
+                ],
             ),
             llm=LLMConfig(
                 provider=os.getenv("LLM_PROVIDER", "github_copilot"),

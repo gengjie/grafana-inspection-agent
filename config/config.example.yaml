@@ -7,6 +7,8 @@ grafana:
   timeout: 30                          # Request timeout in seconds
   verify_ssl: false                    # Verify Grafana TLS certificate
   ca_file: null                        # Optional custom CA bundle path for internal/self-signed certs
+  slow_query_dashboard_uids:            # Dedicated dashboard UID list for slow-query SQL diagnosis
+    - "aawp84s"
 
 # LLM Configuration
 llm:
