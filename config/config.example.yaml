@@ -51,7 +51,7 @@ notification:
   # Teams Configuration
   teams:
     enabled: true                     # Enable Teams notifications
-    webhook_url: "https://dbschenker.webhook.office.com/webhookb2/49b6aaa1-ca8b-45eb-8851-6ca733b1f7fb@c5d1e823-e2b8-46bf-92ff-84f54313e0a5/IncomingWebhook/6de06a8207cb40fbb3bcc36848d7ec76/7f8f9b69-6511-4815-931f-e1b92242a150/V2gCbXu5Dzd0b7SYksmkiDT6CnWEW8ePDoO9dNvn7ps281"  # Teams webhook URL
+    webhook_url: ""                   # Teams webhook URL
 
 # Logging Configuration
 logging:
