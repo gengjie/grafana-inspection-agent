@@ -12,3 +12,5 @@ wheels/
 # Local environment files
 .env
 .env.*
+# Ignore all config files
+config/*
